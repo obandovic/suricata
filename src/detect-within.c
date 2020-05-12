@@ -52,7 +52,7 @@ void DetectWithinRegister(void)
 {
     sigmatch_table[DETECT_WITHIN].name = "within";
     sigmatch_table[DETECT_WITHIN].desc = "indicate that this content match has to be within a certain distance of the previous content keyword match";
-    sigmatch_table[DETECT_WITHIN].url = DOC_URL DOC_VERSION "/rules/payload-keywords.html#within";
+    sigmatch_table[DETECT_WITHIN].url = "/rules/payload-keywords.html#within";
     sigmatch_table[DETECT_WITHIN].Match = NULL;
     sigmatch_table[DETECT_WITHIN].Setup = DetectWithinSetup;
     sigmatch_table[DETECT_WITHIN].Free  = NULL;
@@ -113,7 +113,7 @@ static int DetectWithinSetup(DetectEngineCtx *de_ctx, Signature *s, const char *
         cd->within = ((DetectByteExtractData *)bed_sm->ctx)->local_id;
         cd->flags |= DETECT_CONTENT_WITHIN_BE;
     } else {
-        if (ByteExtractStringInt32(&cd->within, 0, 0, str) != (int)strlen(str)) {
+        if (StringParseInt32(&cd->within, 0, 0, str) < 0) {
             SCLogError(SC_ERR_INVALID_SIGNATURE,
                       "invalid value for within: %s", str);
             goto end;

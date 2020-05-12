@@ -112,58 +112,115 @@ the signature.
 Event type: Anomaly
 -------------------
 
-Events with type "anomaly"
+Events with type "anomaly" report unexpected conditions such as truncated
+packets, packets with invalid values, events that render the packet invalid
+for further processing or unexpected behaviors.
+
+Networks which experience high occurrences of anomalies may experience packet
+processing degradation when anomaly logging is enabled.
 
 Fields
-------
+~~~~~~
 
-* "type": Either "packet" or "stream". In rare cases, type will be "unknown".
-  When this occurs, an additional field named "code" will be present.
-* "event" The name of the anomalous event. Events of type "packet" are prefixed
+* "type": Either "decode", "stream" or "applayer". In rare cases, type will be
+  "unknown". When this occurs, an additional field named "code" will be
+  present. Events with type
+  "applayer" are detected by the application layer parsers.
+* "event" The name of the anomalous event. Events of type "decode" are prefixed
   with "decoder"; events of type "stream" are prefixed with "stream".
-* "code" If "type" is "unknown", than "code" contains the unrecognized event code.
+* "code" If "type" is "unknown", than "code" contains the unrecognized event
+  code. Otherwise, this field is not present.
 
-When ```packethdr``` is enabled, the first 32 bytes of the packet are included as a byte64-encoded blob in the main part of
-record.
+The following field is included when "type" has the value "applayer":
+
+* "layer" Indicates the handling layer that detected the event. This will be
+  "proto_parser" (protocol parser), "proto_detect" (protocol detection) or
+  "parser."
+
+When ``packethdr`` is enabled, the first 32 bytes of the packet are included
+as a byte64-encoded blob in the main part of record. This applies to events
+of "type" "packet" or "stream" only.
 
 Examples
---------
+~~~~~~~~
 
 ::
 
-	"anomaly": {
-	  "type": "packet",
-	  "event": "decoder.icmpv4.unknown_type"
-	}
+    "anomaly": {
+      "type": "decode",
+      "event": "decoder.icmpv4.unknown_type"
+    }
 
-	"anomaly": {
-	  "type": "packet",
-	  "event": "decoder.udp.pkt_too_small"
-	}
+    "anomaly": {
+      "type": "decode",
+      "event": "decoder.udp.pkt_too_small"
+    }
 
-	"anomaly": {
-	  "type": "packet",
-	  "event": "decoder.ipv4.wrong_ip_version"
-	}
+    "anomaly": {
+      "type": "decode",
+      "event": "decoder.ipv4.wrong_ip_version"
+    }
 
-	{
-	  "timestamp": "1969-12-31T16:04:21.000000-0800",
-	  "pcap_cnt": 9262,
-	  "event_type": "anomaly",
-	  "src_ip": "208.21.2.184",
-	  "src_port": 0,
-	  "dest_ip": "10.1.1.99",
-	  "dest_port": 0,
-	  "proto": "UDP",
-	  "packet": "////////AQEBAQEBCABFAAA8xZ5AAP8R1+DQFQK4CgE=",
-	  "packet_info": {
-		"linktype": 1
-	  },
-	  "anomaly": {
-		"type": "packet",
-		"event": "decoder.udp.pkt_too_small"
-	  }
-	}
+    "anomaly": {
+      "type": "stream",
+      "event": "stream.pkt_invalid_timestamp"
+    }
+
+    {
+      "timestamp": "1969-12-31T16:04:21.000000-0800",
+      "pcap_cnt": 9262,
+      "event_type": "anomaly",
+      "src_ip": "208.21.2.184",
+      "src_port": 0,
+      "dest_ip": "10.1.1.99",
+      "dest_port": 0,
+      "proto": "UDP",
+      "packet": "////////AQEBAQEBCABFAAA8xZ5AAP8R1+DQFQK4CgE=",
+      "packet_info": {
+        "linktype": 1
+      },
+      "anomaly": {
+        "type": "decode",
+        "event": "decoder.udp.pkt_too_small"
+      }
+    }
+
+    {
+      "timestamp": "2016-01-11T05:10:54.612110-0800",
+      "flow_id": 412547343494194,
+      "pcap_cnt": 1391293,
+      "event_type": "anomaly",
+      "src_ip": "192.168.122.149",
+      "src_port": 49324,
+      "dest_ip": "69.195.71.174",
+      "dest_port": 443,
+      "proto": "TCP",
+      "app_proto": "tls",
+      "anomaly": {
+        "type": "applayer",
+        "event": "APPLAYER_DETECT_PROTOCOL_ONLY_ONE_DIRECTION",
+        "layer": "proto_detect"
+      }
+    }
+
+    {
+      "timestamp": "2016-01-11T05:10:52.828802-0800",
+      "flow_id": 201217772575257,
+      "pcap_cnt": 1391281,
+      "event_type": "anomaly",
+      "src_ip": "192.168.122.149",
+      "src_port": 49323,
+      "dest_ip": "69.195.71.174",
+      "dest_port": 443,
+      "proto": "TCP",
+      "tx_id": 0,
+      "app_proto": "tls",
+      "anomaly": {
+        "type": "applayer",
+        "event": "INVALID_RECORD_TYPE",
+        "layer": "proto_parser"
+      }
+    }
 
 Event type: HTTP
 ----------------
@@ -177,7 +234,8 @@ Fields
 * "http_content_type": The type of data returned (ex: application/x-gzip)
 * "cookie"
 
-In addition to these fields, if the extended logging is enabled in the suricata.yaml file the following fields are (can) also included:
+In addition to these fields, if the extended logging is enabled in the
+suricata.yaml file the following fields are (can) also included:
 
 * "length": The content size of the HTTP body
 * "status": HTTP status code
@@ -185,8 +243,9 @@ In addition to these fields, if the extended logging is enabled in the suricata.
 * "http_method": The HTTP method (ex: GET, POST, HEAD)
 * "http_refer": The referrer for this action
 
-In addition to the extended logging fields one can also choose to enable/add from more than 50 additional custom logging HTTP fields enabled in the suricata.yaml file. The additional fields can be enabled as following:
-
+In addition to the extended logging fields one can also choose to enable/add
+from more than 50 additional custom logging HTTP fields enabled in the
+suricata.yaml file. The additional fields can be enabled as following:
 
 ::
 
@@ -219,10 +278,12 @@ In addition to the extended logging fields one can also choose to enable/add fro
               www-authenticate, x-flash-version, x-authenticated-user]
 
 
-The benefits here of using the extended logging is to see if this action for example was a POST or perhaps if a download of an executable actually returned any bytes.
+The benefits here of using the extended logging is to see if this action for
+example was a POST or perhaps if a download of an executable actually returned
+any bytes.
 
-It is also possible to dump every header for HTTP requests/responses or both via the keyword ``dump-all-headers``.
-
+It is also possible to dump every header for HTTP requests/responses or both
+via the keyword ``dump-all-headers``.
 
 
 Examples
@@ -471,6 +532,80 @@ Example of a old DNS answer with an IPv4 (resource record type 'A') return:
       "rrtype":"A",
       "ttl":8,
       "rdata": "199.16.156.6"
+  }
+
+Event type: FTP
+---------------
+
+Fields
+~~~~~~
+
+* "command": The FTP command.
+* "command_data": The data accompanying the command.
+* "reply": The command reply, which may contain multiple lines, in array format.
+* "completion_code": The 3-digit completion code. The first digit indicates whether the response is good, bad or incomplete. This
+  is also in array format and may contain multiple completion codes matching multiple reply lines.
+* "dynamic_port": The dynamic port established for subsequent data transfers, when applicable, with a "PORT" or "EPRT" command.
+* "mode": The type of FTP connection. Most connections are "passive" but may be "active".
+* "reply_received": Indicates whether a response was matched to the command. In some non-typical cases, a command may lack a response.
+
+
+Examples
+~~~~~~~~
+
+Example of regular FTP logging:
+
+::
+
+  "ftp": {
+    "command": "RETR",
+    "command_data": "100KB.zip",
+    "reply": [
+      "Opening BINARY mode data connection for 100KB.zip (102400 bytes).",
+      "Transfer complete."
+    ],
+    "completion_code": [
+      "150",
+      "226"
+    ],
+
+Example showing all fields:
+
+::
+
+  "ftp": {
+    "command": "EPRT",
+    "command_data": "|2|2a01:e34:ee97:b130:8c3e:45ea:5ac6:e301|41813|",
+    "reply": [
+      "EPRT command successful. Consider using EPSV."
+    ],
+    "completion_code": [
+      "200"
+    ],
+    "dynamic_port": 41813,
+    "mode": "active",
+    "reply_received": "yes"
+  }
+
+Event type: FTP_DATA
+--------------------
+
+Fields
+~~~~~~
+
+* "command": The FTP command associated with the event.
+* "filename": The name of the involved file.
+
+Examples
+~~~~~~~~
+
+Example of FTP_DATA logging:
+
+::
+
+  "ftp_data": {
+    "filename": "temp.txt",
+    "command": "RETR"
   }
 
 Event type: TLS
@@ -860,3 +995,295 @@ Example of SSH logging:
         "software_version": "OpenSSH_6.7",
      }
   }
+
+Event type: Flow
+----------------
+
+Fields
+~~~~~~
+
+* "pkts_toserver": total number of packets to server, include bypassed packets
+* "pkts_toclient": total number of packets to client
+* "bytes_toserver": total bytes count to server
+* "bytes_toclient": total bytes count to client
+* "bypassed.pkts_toserver": number of bypassed packets to server
+* "bypassed.pkts_toclient": number of bypassed packets to client
+* "bypassed.bytes_toserver": bypassed bytes count to server
+* "bypassed.bytes_toclient": bypassed bytes count to client
+* "start": date of start of the flow
+* "end": date of end of flow (last seen packet)
+* "age": duration of the flow
+* "bypass": if the flow has been bypassed, it is set to "local" (internal bypass) or "capture"
+* "state": display state of the flow (include "new", "established", "closed", "bypassed")
+* "reason": mechanism that did trigger the end of the flow (include "timeout", "forced" and "shutdown")
+* "alerted": "true" or "false" depending if an alert has been seen on flow
+
+Example ::
+
+  "flow": {
+    "pkts_toserver": 23,
+    "pkts_toclient": 21,
+    "bytes_toserver": 4884,
+    "bytes_toclient": 7392,
+    "bypassed": {
+      "pkts_toserver": 10,
+      "pkts_toclient": 8,
+      "bytes_toserver": 1305,
+      "bytes_toclient": 984
+    },
+    "start": "2019-05-28T23:32:29.025256+0200",
+    "end": "2019-05-28T23:35:28.071281+0200",
+    "age": 179,
+    "bypass": "capture",
+    "state": "bypassed",
+    "reason": "timeout",
+    "alerted": false
+  }
+
+Event type: RDP
+---------------
+
+Initial negotiations between RDP client and server are stored as transactions and logged.
+
+Each RDP record contains a per-flow incrementing "tx_id" field.
+
+The "event_type" field indicates an RDP event subtype. Possible values:
+
+* "initial_request"
+* "initial_response"
+* "connect_request"
+* "connect_response"
+* "tls_handshake"
+
+RDP type: Initial Request
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The optional "cookie" field is a string identifier the RDP client has chosen to provide.
+
+The optional "flags" field is a list of client directives. Possible values:
+
+* "restricted_admin_mode_required"
+* "redirected_authentication_mode_required"
+* "correlation_info_present"
+
+RDP type: Initial Response
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In the event of a standard initial response:
+
+The "protocol" field is the selected protocol. Possible values:
+
+* "rdp"
+* "ssl"
+* "hybrid"
+* "rds_tls"
+* "hybrid_ex"
+
+The optional "flags" field is a list of support server modes. Possible values:
+
+* "extended_client_data"
+* "dynvc_gfx"
+* "restricted_admin"
+* "redirected_authentication"
+
+Alternatively, in the event of an error-indicating initial response:
+
+There will be no "protocol" or "flags" fields.
+
+The "error_code" field will contain the numeric code provided by the RDP server.
+
+The "reason" field will contain a text summary of this code. Possible values:
+
+* "ssl required by server" (error code 0x1)
+* "ssl not allowed by server" (error code 0x2)
+* "ssl cert not on server" (error code 0x3)
+* "inconsistent flags" (error code 0x4)
+* "hybrid required by server" (error code 0x5)
+* "ssl with user auth required by server" (error code 0x6)
+
+RDP type: Connect Request
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The optional "channel" field is a list of requested data channel names.
+
+Common channels:
+
+* "rdpdr" (device redirection)
+* "cliprdr" (shared clipboard)
+* "rdpsnd" (sound)
+
+The optional "client" field is a sub-object that may contain the following:
+
+* "version": RDP protocol version. Possible values are "v4", "v5", "v10.0", "v10.1", "v10.2", "v10.3", "v10.4", "v10.5", "v10.6", "v10.7", "unknown".
+* "desktop_width": Numeric desktop width value.
+* "desktop_height": Numeric desktop height value.
+* "color_depth": Numeric color depth. Possible values are 4, 8, 15, 16, 24.
+* "keyboard_layout": Locale identifier name, e.g., "en-US".
+* "build": OS and SP level, e.g., "Windows XP", "Windows 7 SP1".
+* "client_name": Client computer name.
+* "keyboard_type": Possible values are "xt", "ico", "at", "enhanced", "1050", "9140", "jp".
+* "keyboard_subtype": Numeric code for keyboard.
+* "function_keys": Number of function keys on client keyboard.
+* "ime": Input method editor (IME) file name.
+* "product_id": Product id string.
+* "serial_number": Numeric value.
+* "capabilities": List of any of the following: "support_errinfo_pdf", "want_32bpp_session", "support_statusinfo_pdu", "strong_asymmetric_keys", "valid_connection_type", "support_monitor_layout_pdu", "support_netchar_autodetect", "support_dynvc_gfx_protocol", "support_dynamic_time_zone", "support_heartbeat_pdu".
+* "id": Client product id string.
+* "connection_hint": Possible values are "modem", "low_broadband", "satellite", "high_broadband", "wan", "lan", "autodetect".
+* "physical_width": Numeric phyical width of display.
+* "physical_height": Numeric physical height of display.
+* "desktop_orientation": Numeric angle of orientation.
+* "scale_factor": Numeric scale factor of desktop.
+* "device_scale_factor": Numeric scale factor of display.
+
+RDP type: Connect Response
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+With this event, the initial RDP negotiation is complete in terms of tracking and logging.
+
+RDP type: TLS Handshake
+~~~~~~~~~~~~~~~~~~~~~~~
+
+With this event, the initial RDP negotiation is complete in terms of tracking and logging.
+
+The session will use TLS encryption.
+
+The "x509_serials" field is a list of observed certificate serial numbers, e.g., "16ed2aa0495f259d4f5d99edada570d1".
+
+Examples
+~~~~~~~~
+
+RDP logging:
+
+::
+
+  "rdp": {
+    "tx_id": 0,
+    "event_type": "initial_request",
+    "cookie": "A70067"
+  }
+
+  "rdp": {
+    "tx_id": 1,
+    "event_type": "initial_response"
+  }
+
+  "rdp": {
+    "tx_id": 2,
+    "event_type": "connect_request",
+    "client": {
+      "version": "v5",
+      "desktop_width": 1152,
+      "desktop_height": 864,
+      "color_depth": 15,
+      "keyboard_layout": "en-US",
+      "build": "Windows XP",
+      "client_name": "ISD2-KM84178",
+      "keyboard_type": "enhanced",
+      "function_keys": 12,
+      "product_id": 1,
+      "capabilities": [
+        "support_errinfo_pdf"
+      ],
+      "id": "55274-OEM-0011903-00107"
+    },
+    "channels": [
+      "rdpdr",
+      "cliprdr",
+      "rdpsnd"
+    ]
+  }
+
+  "rdp": {
+    "tx_id": 3,
+    "event_type": "connect_response"
+  }
+
+
+RDP logging, with transition to TLS:
+
+::
+
+  "rdp": {
+    "tx_id": 0,
+    "event_type": "initial_request",
+    "cookie": "AWAKECODI"
+  }
+
+  "rdp": {
+    "tx_id": 1,
+    "event_type": "initial_response",
+    "server_supports": [
+      "extended_client_data"
+    ],
+    "protocol": "hybrid"
+  }
+
+  "rdp": {
+    "tx_id": 2,
+    "event_type": "tls_handshake",
+    "x509_serials": [
+      "16ed2aa0495f259d4f5d99edada570d1"
+    ]
+  }
+
+Event type: RFB
+---------------
+
+Fields
+~~~~~~
+
+* "server_protocol_version.major", "server_protocol_version.minor": The RFB protocol version offered by the server.
+* "client_protocol_version.major", "client_protocol_version.minor": The RFB protocol version agreed by the client.
+* "authentication.security_type": Security type agreed upon in the logged transaction, e.g. ``2`` is VNC auth.
+* "authentication.vnc.challenge", "authentication.vnc.response": Only available when security type 2 is used. Contains the challenge and response byte buffers exchanged by the server and client as hex strings.
+* "authentication.security-result": Result of the authentication process (``OK``, ``FAIL`` or ``TOOMANY``).
+* "screen_shared": Boolean value describing whether the client requested screen sharing.
+* "framebuffer": Contains metadata about the initial screen setup process. Only available when the handshake completed this far.
+* "framebuffer.width", "framebuffer.height": Screen size as offered by the server.
+* "framebuffer.name": Desktop name as advertised by the server.
+* "framebuffer.pixel_format": Pixel representation information, such as color depth. See RFC6143 (https://tools.ietf.org/html/rfc6143) for details.
+
+
+Examples
+~~~~~~~~
+
+Example of RFB logging, with full VNC style authentication parameters:
+
+::
+
+  "rfb": {
+    "server_protocol_version": {
+      "major": "003",
+      "minor": "007"
+    },
+    "client_protocol_version": {
+      "major": "003",
+      "minor": "007"
+    },
+    "authentication": {
+      "security_type": 2,
+      "vnc": {
+        "challenge": "0805b790b58e967f2b350a0c99de3881",
+        "response": "aecb26faeaaa62179636a5934bac1078"
+      },
+      "security-result": "OK"
+    },
+    "screen_shared": false,
+    "framebuffer": {
+      "width": 1280,
+      "height": 800,
+      "name": "foobar@localhost.localdomain",
+      "pixel_format": {
+        "bits_per_pixel": 32,
+        "depth": 24,
+        "big_endian": false,
+        "true_color": true,
+        "red_max": 255,
+        "green_max": 255,
+        "blue_max": 255,
+        "red_shift": 16,
+        "green_shift": 8,
+        "blue_shift": 0
+      }
+    }

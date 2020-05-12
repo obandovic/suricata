@@ -55,8 +55,6 @@
 #include "output-json-http.h"
 #include "util-byte.h"
 
-#ifdef HAVE_LIBJANSSON
-
 typedef struct LogHttpFileCtx_ {
     LogFileCtx *file_ctx;
     uint32_t flags; /** Store mode */
@@ -645,6 +643,10 @@ static OutputInitResult OutputHttpLogInit(ConfNode *conf)
                 http_ctx->flags |= LOG_HTTP_REQ_HEADERS;
             } else if (strcmp(all_headers, "response") == 0) {
                 http_ctx->flags |= LOG_HTTP_RES_HEADERS;
+            } else if (strcmp(all_headers, "none") != 0) {
+                SCLogWarning(SC_WARN_ANOMALY_CONFIG,
+                             "unhandled value for dump-all-headers configuration : %s",
+                             all_headers);
             }
         }
     }
@@ -759,7 +761,6 @@ static OutputInitResult OutputHttpLogInitSub(ConfNode *conf, OutputCtx *parent_c
     return result;
 }
 
-#define OUTPUT_BUFFER_SIZE 65535
 static TmEcode JsonHttpLogThreadInit(ThreadVars *t, const void *initdata, void **data)
 {
     JsonHttpLogThread *aft = SCMalloc(sizeof(JsonHttpLogThread));
@@ -777,7 +778,7 @@ static TmEcode JsonHttpLogThreadInit(ThreadVars *t, const void *initdata, void *
     /* Use the Ouptut Context (file pointer and mutex) */
     aft->httplog_ctx = ((OutputCtx *)initdata)->data; //TODO
 
-    aft->buffer = MemBufferCreateNew(OUTPUT_BUFFER_SIZE);
+    aft->buffer = MemBufferCreateNew(JSON_OUTPUT_BUFFER_SIZE);
     if (aft->buffer == NULL) {
         SCFree(aft);
         return TM_ECODE_FAILED;
@@ -814,11 +815,3 @@ void JsonHttpLogRegister (void)
         "eve-log.http", OutputHttpLogInitSub, ALPROTO_HTTP, JsonHttpLogger,
         JsonHttpLogThreadInit, JsonHttpLogThreadDeinit, NULL);
 }
-
-#else
-
-void JsonHttpLogRegister (void)
-{
-}
-
-#endif

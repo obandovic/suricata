@@ -125,6 +125,19 @@
 #include <sched.h>     /* for sched_setaffinity(2) */
 #endif
 
+#ifdef HAVE_TYPE_U_LONG_NOT_DEFINED
+typedef unsigned long int u_long
+#endif
+#ifdef HAVE_TYPE_U_INT_NOT_DEFINED
+typedef unsigned int u_int
+#endif
+#ifdef HAVE_TYPE_U_SHORT_NOT_DEFINED
+typedef unsigned short u_short
+#endif
+#ifdef HAVE_TYPE_U_CHAR_NOT_DEFINED
+typedef unsigned char u_char
+#endif
+
 #include <pcre.h>
 
 #ifdef HAVE_SYSLOG_H
@@ -156,10 +169,6 @@
 #include <signal.h>
 #endif
 
-#if HAVE_SYS_TYPES_H
-#include <sys/types.h>
-#endif
-
 #if HAVE_SYS_SOCKET_H
 #include <sys/socket.h>
 #endif
@@ -186,24 +195,6 @@
 
 #if HAVE_NETDB_H
 #include <netdb.h>
-#endif
-
-#ifndef SC_PCAP_DONT_INCLUDE_PCAP_H
-#ifdef HAVE_PCAP_H
-#include <pcap.h>
-#endif
-
-#ifdef HAVE_PCAP_PCAP_H
-#include <pcap/pcap.h>
-#endif
-#endif
-
-#ifdef HAVE_UTIME_H
-#include <utime.h>
-#endif
-
-#ifdef HAVE_LIBGEN_H
-#include <libgen.h>
 #endif
 
 #if __CYGWIN__
@@ -236,7 +227,32 @@
 #include <w32api/wtypes.h>
 #endif
 
-#ifdef HAVE_LIBJANSSON
+#ifndef SC_PCAP_DONT_INCLUDE_PCAP_H
+#ifdef HAVE_PCAP_H
+#include <pcap.h>
+#endif
+
+#ifdef HAVE_PCAP_PCAP_H
+#include <pcap/pcap.h>
+#endif
+#endif
+
+#ifdef HAVE_UTIME_H
+#include <utime.h>
+#endif
+
+#ifdef HAVE_LIBGEN_H
+#include <libgen.h>
+#endif
+
+#ifdef HAVE_GRP_H
+#include <grp.h>
+#endif
+
+#ifdef HAVE_PWD_H
+#include <pwd.h>
+#endif
+
 #include <jansson.h>
 #ifndef JSON_ESCAPE_SLASH
 #define JSON_ESCAPE_SLASH 0
@@ -245,7 +261,6 @@
 #ifndef json_boolean
 #define json_boolean(val)      SCJsonBool((val))
 //#define json_boolean(val)      ((val) ? json_true() : json_false())
-#endif
 #endif
 
 #ifdef HAVE_MAGIC
@@ -373,6 +388,12 @@
 
 #define WARN_UNUSED __attribute__((warn_unused_result))
 
+#if defined(__GNUC__)
+#define ATTR_FMT_PRINTF(x, y) __attribute__((format(printf, (x), (y))))
+#else
+#define ATTR_FMT_PRINTF(x, y)
+#endif
+
 #define SCNtohl(x) (uint32_t)ntohl((x))
 #define SCNtohs(x) (uint16_t)ntohs((x))
 
@@ -431,6 +452,7 @@ typedef enum {
     LOGGER_JSON_TLS,
     LOGGER_JSON_NFS,
     LOGGER_JSON_TFTP,
+    LOGGER_JSON_FTP,
     LOGGER_JSON_DNP3_TS,
     LOGGER_JSON_DNP3_TC,
     LOGGER_JSON_SSH,
@@ -439,8 +461,11 @@ typedef enum {
     LOGGER_JSON_KRB5,
     LOGGER_JSON_DHCP,
     LOGGER_JSON_SNMP,
+    LOGGER_JSON_SIP,
     LOGGER_JSON_TEMPLATE_RUST,
+    LOGGER_JSON_RFB,
     LOGGER_JSON_TEMPLATE,
+    LOGGER_JSON_RDP,
 
     LOGGER_ALERT_DEBUG,
     LOGGER_ALERT_FAST,
@@ -478,6 +503,10 @@ typedef enum {
 #include <lua.h>
 #include <lualib.h>
 #include <lauxlib.h>
+#else
+/* If we don't have Lua, create a typedef for lua_State so the
+ * exported Lua functions don't fail the build. */
+typedef void lua_State;
 #endif
 
 #ifndef HAVE_STRLCAT
@@ -493,5 +522,12 @@ char *strptime(const char * __restrict, const char * __restrict, struct tm * __r
 extern int coverage_unittests;
 extern int g_ut_modules;
 extern int g_ut_covered;
+
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
+
+#ifndef NAME_MAX
+#define NAME_MAX 255
+#endif
+
 #endif /* __SURICATA_COMMON_H__ */
 

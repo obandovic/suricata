@@ -200,8 +200,6 @@ static void OutputFiledataLogFfc(ThreadVars *tv, OutputLoggerThreadStore *store,
                 }
             }
         }
-
-        FilePrune(ffc);
     }
 }
 
@@ -229,10 +227,8 @@ static TmEcode OutputFiledataLog(ThreadVars *tv, Packet *p, void *thread_data)
             (p->flowflags & FLOW_PKT_TOCLIENT));
     const bool file_trunc = StreamTcpReassembleDepthReached(p);
 
-    FileContainer *ffc_ts = AppLayerParserGetFiles(p->proto, f->alproto,
-                                                   f->alstate, STREAM_TOSERVER);
-    FileContainer *ffc_tc = AppLayerParserGetFiles(p->proto, f->alproto,
-                                                   f->alstate, STREAM_TOCLIENT);
+    FileContainer *ffc_ts = AppLayerParserGetFiles(f, STREAM_TOSERVER);
+    FileContainer *ffc_tc = AppLayerParserGetFiles(f, STREAM_TOCLIENT);
     SCLogDebug("ffc_ts %p", ffc_ts);
     OutputFiledataLogFfc(tv, store, p, ffc_ts, STREAM_TOSERVER, file_close_ts, file_trunc, STREAM_TOSERVER);
     SCLogDebug("ffc_tc %p", ffc_tc);
@@ -262,7 +258,7 @@ static void LogFiledataLogLoadWaldo(const char *path)
     if (fgets(line, (int)sizeof(line), fp) != NULL) {
         if (sscanf(line, "%10u", &id) == 1) {
             SCLogInfo("id %u", id);
-            (void) SC_ATOMIC_CAS(&g_file_store_id, 0, id);
+            SC_ATOMIC_SET(g_file_store_id, id);
         }
     }
     fclose(fp);
@@ -279,7 +275,7 @@ static void LogFiledataLogStoreWaldo(const char *path)
 {
     char line[16] = "";
 
-    if (SC_ATOMIC_GET(g_file_store_id) == 0) {
+    if (SC_ATOMIC_GET(g_file_store_id) == 1) {
         SCReturn;
     }
 
@@ -437,12 +433,22 @@ static void OutputFiledataLogExitPrintStats(ThreadVars *tv, void *thread_data)
     }
 }
 
+static uint32_t OutputFiledataLoggerGetActiveCount(void)
+{
+    uint32_t cnt = 0;
+    for (OutputFiledataLogger *p = list; p != NULL; p = p->next) {
+        cnt++;
+    }
+    return cnt;
+}
+
 void OutputFiledataLoggerRegister(void)
 {
     OutputRegisterRootLogger(OutputFiledataLogThreadInit,
         OutputFiledataLogThreadDeinit, OutputFiledataLogExitPrintStats,
-        OutputFiledataLog);
+        OutputFiledataLog, OutputFiledataLoggerGetActiveCount);
     SC_ATOMIC_INIT(g_file_store_id);
+    SC_ATOMIC_SET(g_file_store_id, 1);
 }
 
 void OutputFiledataShutdown(void)

@@ -130,8 +130,8 @@ static void DetectRun(ThreadVars *th_v,
     DetectRulePacketRules(th_v, de_ctx, det_ctx, p, pflow, &scratch);
     PACKET_PROFILING_DETECT_END(p, PROF_DETECT_RULES);
 
-    /* run tx/state inspection */
-    if (pflow && pflow->alstate) {
+    /* run tx/state inspection. Don't call for ICMP error msgs. */
+    if (pflow && pflow->alstate && likely(pflow->proto == p->proto)) {
         PACKET_PROFILING_DETECT_START(p, PROF_DETECT_TX);
         DetectRunTx(th_v, de_ctx, det_ctx, p, pflow, &scratch);
         PACKET_PROFILING_DETECT_END(p, PROF_DETECT_TX);
@@ -157,7 +157,7 @@ static void DetectRunPostMatch(ThreadVars *tv,
 
         while (1) {
             KEYWORD_PROFILING_START;
-            (void)sigmatch_table[smd->type].Match(tv, det_ctx, p, s, smd->ctx);
+            (void)sigmatch_table[smd->type].Match(det_ctx, p, s, smd->ctx);
             KEYWORD_PROFILING_END(det_ctx, smd->type, 1);
             if (smd->is_last)
                 break;
@@ -386,54 +386,49 @@ DetectPrefilterSetNonPrefilterList(const Packet *p, DetectEngineThreadCtx *det_c
 
 /** \internal
  *  \brief update flow's file tracking flags based on the detection engine
+ *         A set of flags is prepared that is sent to the File API. The
+           File API may reject one or more based on the global force settings.
  */
 static inline void
-DetectPostInspectFileFlagsUpdate(Flow *pflow, const SigGroupHead *sgh, uint8_t direction)
+DetectPostInspectFileFlagsUpdate(Flow *f, const SigGroupHead *sgh, uint8_t direction)
 {
-    /* see if this sgh requires us to consider file storing */
-    if (!FileForceFilestore() && (sgh == NULL ||
-                sgh->filestore_cnt == 0))
-    {
-        FileDisableStoring(pflow, direction);
-    }
+    uint16_t flow_file_flags = FLOWFILE_INIT;
+
+    if (sgh == NULL) {
+        SCLogDebug("requesting disabling all file features for flow");
+        flow_file_flags = FLOWFILE_NONE;
+    } else {
+        if (sgh->filestore_cnt == 0) {
+            SCLogDebug("requesting disabling filestore for flow");
+            flow_file_flags |= (FLOWFILE_NO_STORE_TS|FLOWFILE_NO_STORE_TC);
+        }
 #ifdef HAVE_MAGIC
-    /* see if this sgh requires us to consider file magic */
-    if (!FileForceMagic() && (sgh == NULL ||
-                !(sgh->flags & SIG_GROUP_HEAD_HAVEFILEMAGIC)))
-    {
-        SCLogDebug("disabling magic for flow");
-        FileDisableMagic(pflow, direction);
-    }
+        if (!(sgh->flags & SIG_GROUP_HEAD_HAVEFILEMAGIC)) {
+            SCLogDebug("requesting disabling magic for flow");
+            flow_file_flags |= (FLOWFILE_NO_MAGIC_TS|FLOWFILE_NO_MAGIC_TC);
+        }
 #endif
-    /* see if this sgh requires us to consider file md5 */
-    if (!FileForceMd5() && (sgh == NULL ||
-                !(sgh->flags & SIG_GROUP_HEAD_HAVEFILEMD5)))
-    {
-        SCLogDebug("disabling md5 for flow");
-        FileDisableMd5(pflow, direction);
+#ifdef HAVE_NSS
+        if (!(sgh->flags & SIG_GROUP_HEAD_HAVEFILEMD5)) {
+            SCLogDebug("requesting disabling md5 for flow");
+            flow_file_flags |= (FLOWFILE_NO_MD5_TS|FLOWFILE_NO_MD5_TC);
+        }
+        if (!(sgh->flags & SIG_GROUP_HEAD_HAVEFILESHA1)) {
+            SCLogDebug("requesting disabling sha1 for flow");
+            flow_file_flags |= (FLOWFILE_NO_SHA1_TS|FLOWFILE_NO_SHA1_TC);
+        }
+        if (!(sgh->flags & SIG_GROUP_HEAD_HAVEFILESHA256)) {
+            SCLogDebug("requesting disabling sha256 for flow");
+            flow_file_flags |= (FLOWFILE_NO_SHA256_TS|FLOWFILE_NO_SHA256_TC);
+        }
+#endif
+        if (!(sgh->flags & SIG_GROUP_HEAD_HAVEFILESIZE)) {
+            SCLogDebug("requesting disabling filesize for flow");
+            flow_file_flags |= (FLOWFILE_NO_SIZE_TS|FLOWFILE_NO_SIZE_TC);
+        }
     }
-
-    /* see if this sgh requires us to consider file sha1 */
-    if (!FileForceSha1() && (sgh == NULL ||
-                !(sgh->flags & SIG_GROUP_HEAD_HAVEFILESHA1)))
-    {
-        SCLogDebug("disabling sha1 for flow");
-        FileDisableSha1(pflow, direction);
-    }
-
-    /* see if this sgh requires us to consider file sha256 */
-    if (!FileForceSha256() && (sgh == NULL ||
-                !(sgh->flags & SIG_GROUP_HEAD_HAVEFILESHA256)))
-    {
-        SCLogDebug("disabling sha256 for flow");
-        FileDisableSha256(pflow, direction);
-    }
-
-    /* see if this sgh requires us to consider filesize */
-    if (sgh == NULL || !(sgh->flags & SIG_GROUP_HEAD_HAVEFILESIZE))
-    {
-        SCLogDebug("disabling filesize for flow");
-        FileDisableFilesize(pflow, direction);
+    if (flow_file_flags != 0) {
+        FileUpdateFlowFileFlags(f, flow_file_flags, direction);
     }
 }
 
@@ -658,38 +653,6 @@ static inline int DetectRunInspectRuleHeader(
     return 1;
 }
 
-/* returns 0 if no match, 1 if match */
-static inline int DetectRunInspectRulePacketMatches(
-    ThreadVars *tv,
-    DetectEngineThreadCtx *det_ctx,
-    Packet *p,
-    const Flow *f,
-    const Signature *s)
-{
-    /* run the packet match functions */
-    if (s->sm_arrays[DETECT_SM_LIST_MATCH] != NULL) {
-        KEYWORD_PROFILING_SET_LIST(det_ctx, DETECT_SM_LIST_MATCH);
-        SigMatchData *smd = s->sm_arrays[DETECT_SM_LIST_MATCH];
-
-        SCLogDebug("running match functions, sm %p", smd);
-        while (1) {
-            KEYWORD_PROFILING_START;
-            if (sigmatch_table[smd->type].Match(tv, det_ctx, p, s, smd->ctx) <= 0) {
-                KEYWORD_PROFILING_END(det_ctx, smd->type, 0);
-                SCLogDebug("no match");
-                return 0;
-            }
-            KEYWORD_PROFILING_END(det_ctx, smd->type, 1);
-            if (smd->is_last) {
-                SCLogDebug("match and is_last");
-                break;
-            }
-            smd++;
-        }
-    }
-    return 1;
-}
-
 /** \internal
  *  \brief run packet/stream prefilter engines
  */
@@ -761,10 +724,8 @@ static inline void DetectRulePacketRules(
 
     SGH_PROFILING_RECORD(det_ctx, scratch->sgh);
 #ifdef PROFILING
-#ifdef HAVE_LIBJANSSON
     if (match_cnt >= de_ctx->profile_match_logging_threshold)
         RulesDumpMatchArray(det_ctx, scratch->sgh, p);
-#endif
 #endif
 
     uint32_t sflags, next_sflags = 0;
@@ -827,49 +788,9 @@ static inline void DetectRulePacketRules(
             goto next;
         }
 
-        /* Check the payload keywords. If we are a MPM sig and we've made
-         * to here, we've had at least one of the patterns match */
-        if (s->sm_arrays[DETECT_SM_LIST_PMATCH] != NULL) {
-            KEYWORD_PROFILING_SET_LIST(det_ctx, DETECT_SM_LIST_PMATCH);
-            /* if we have stream msgs, inspect against those first,
-             * but not for a "dsize" signature */
-            if (sflags & SIG_FLAG_REQUIRE_STREAM) {
-                int pmatch = 0;
-                if (p->flags & PKT_DETECT_HAS_STREAMDATA) {
-                    pmatch = DetectEngineInspectStreamPayload(de_ctx, det_ctx, s, pflow, p);
-                    if (pmatch) {
-                        det_ctx->flags |= DETECT_ENGINE_THREAD_CTX_STREAM_CONTENT_MATCH;
-                        /* Tell the engine that this reassembled stream can drop the
-                         * rest of the pkts with no further inspection */
-                        if (s->action & ACTION_DROP)
-                            alert_flags |= PACKET_ALERT_FLAG_DROP_FLOW;
-
-                        alert_flags |= PACKET_ALERT_FLAG_STREAM_MATCH;
-                    }
-                }
-                /* no match? then inspect packet payload */
-                if (pmatch == 0) {
-                    SCLogDebug("no match in stream, fall back to packet payload");
-
-                    /* skip if we don't have to inspect the packet and segment was
-                     * added to stream */
-                    if (!(sflags & SIG_FLAG_REQUIRE_PACKET) && (p->flags & PKT_STREAM_ADD)) {
-                        goto next;
-                    }
-
-                    if (DetectEngineInspectPacketPayload(de_ctx, det_ctx, s, pflow, p) != 1) {
-                        goto next;
-                    }
-                }
-            } else {
-                if (DetectEngineInspectPacketPayload(de_ctx, det_ctx, s, pflow, p) != 1) {
-                    goto next;
-                }
-            }
-        }
-
-        if (DetectRunInspectRulePacketMatches(tv, det_ctx, p, pflow, s) == 0)
+        if (DetectEnginePktInspectionRun(tv, det_ctx, s, pflow, p, &alert_flags) == false) {
             goto next;
+        }
 
 #ifdef PROFILING
         smatch = true;
@@ -1022,6 +943,7 @@ static void DetectRunCleanup(DetectEngineThreadCtx *det_ctx,
     PACKET_PROFILING_DETECT_START(p, PROF_DETECT_CLEANUP);
     /* cleanup pkt specific part of the patternmatcher */
     PacketPatternCleanup(det_ctx);
+    InspectionBufferClean(det_ctx);
 
     if (pflow != NULL) {
         /* update inspected tracker for raw reassembly */
@@ -1146,6 +1068,7 @@ static bool DetectRunTxInspectRule(ThreadVars *tv,
         flow_flags &=~ STREAM_FLUSH;
 
     TRACE_SID_TXS(s->id, tx, "starting %s", direction ? "toclient" : "toserver");
+    TRACE_SID_TXS(s->id, tx, "FLUSH? %s", (flow_flags & STREAM_FLUSH)?"true":"false");
 
     /* for a new inspection we inspect pkt header and packet matches */
     if (likely(stored_flags == NULL)) {
@@ -1154,8 +1077,8 @@ static bool DetectRunTxInspectRule(ThreadVars *tv,
             TRACE_SID_TXS(s->id, tx, "DetectRunInspectRuleHeader() no match");
             return false;
         }
-        if (DetectRunInspectRulePacketMatches(tv, det_ctx, p, f, s) == 0) {
-            TRACE_SID_TXS(s->id, tx, "DetectRunInspectRulePacketMatches no match");
+        if (DetectEnginePktInspectionRun(tv, det_ctx, s, f, p, NULL) == false) {
+            TRACE_SID_TXS(s->id, tx, "DetectEnginePktInspectionRun no match");
             return false;
         }
         /* stream mpm and negated mpm sigs can end up here with wrong proto */
@@ -1671,7 +1594,7 @@ static void DetectNoFlow(ThreadVars *tv,
  *  \retval TM_ECODE_FAILED error
  *  \retval TM_ECODE_OK ok
  */
-TmEcode Detect(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq)
+TmEcode Detect(ThreadVars *tv, Packet *p, void *data)
 {
     DEBUG_VALIDATE_PACKET(p);
 

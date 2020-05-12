@@ -48,8 +48,7 @@
 #include "output-json-flow.h"
 
 #include "stream-tcp-private.h"
-
-#ifdef HAVE_LIBJANSSON
+#include "flow-storage.h"
 
 typedef struct LogJsonFileCtx_ {
     LogFileCtx *file_ctx;
@@ -199,14 +198,38 @@ void JsonAddFlow(Flow *f, json_t *js, json_t *hjs)
                 json_string(AppProtoToString(f->alproto_expect)));
     }
 
-    json_object_set_new(hjs, "pkts_toserver",
-            json_integer(f->todstpktcnt));
-    json_object_set_new(hjs, "pkts_toclient",
-            json_integer(f->tosrcpktcnt));
-    json_object_set_new(hjs, "bytes_toserver",
-            json_integer(f->todstbytecnt));
-    json_object_set_new(hjs, "bytes_toclient",
-            json_integer(f->tosrcbytecnt));
+    FlowBypassInfo *fc = FlowGetStorageById(f, GetFlowBypassInfoID());
+    if (fc) {
+        json_object_set_new(hjs, "pkts_toserver",
+                json_integer(f->todstpktcnt + fc->todstpktcnt));
+        json_object_set_new(hjs, "pkts_toclient",
+                json_integer(f->tosrcpktcnt + fc->tosrcpktcnt));
+        json_object_set_new(hjs, "bytes_toserver",
+                json_integer(f->todstbytecnt + fc->todstbytecnt));
+        json_object_set_new(hjs, "bytes_toclient",
+                json_integer(f->tosrcbytecnt + fc->tosrcbytecnt));
+        json_t *bhjs = json_object();
+        if (bhjs != NULL) {
+            json_object_set_new(bhjs, "pkts_toserver",
+                    json_integer(fc->todstpktcnt));
+            json_object_set_new(bhjs, "pkts_toclient",
+                    json_integer(fc->tosrcpktcnt));
+            json_object_set_new(bhjs, "bytes_toserver",
+                    json_integer(fc->todstbytecnt));
+            json_object_set_new(bhjs, "bytes_toclient",
+                    json_integer(fc->tosrcbytecnt));
+            json_object_set_new(hjs, "bypassed", bhjs);
+        }
+    } else {
+        json_object_set_new(hjs, "pkts_toserver",
+                json_integer(f->todstpktcnt));
+        json_object_set_new(hjs, "pkts_toclient",
+                json_integer(f->tosrcpktcnt));
+        json_object_set_new(hjs, "bytes_toserver",
+                json_integer(f->todstbytecnt));
+        json_object_set_new(hjs, "bytes_toclient",
+                json_integer(f->tosrcbytecnt));
+    }
 
     char timebuf1[64];
     CreateIsoTimeString(&f->startts, timebuf1, sizeof(timebuf1));
@@ -249,10 +272,12 @@ static void JsonFlowLogJSON(JsonFlowLogThread *aft, json_t *js, Flow *f)
                 json_object_set_new(hjs, "bypass",
                         json_string("local"));
                 break;
+#ifdef CAPTURE_OFFLOAD
             case FLOW_STATE_CAPTURE_BYPASSED:
                 json_object_set_new(hjs, "bypass",
                         json_string("capture"));
                 break;
+#endif
             default:
                 SCLogError(SC_ERR_INVALID_VALUE,
                            "Invalid flow state: %d, contact developers",
@@ -459,7 +484,6 @@ static OutputInitResult OutputFlowLogInitSub(ConfNode *conf, OutputCtx *parent_c
     return result;
 }
 
-#define OUTPUT_BUFFER_SIZE 65535
 static TmEcode JsonFlowLogThreadInit(ThreadVars *t, const void *initdata, void **data)
 {
     JsonFlowLogThread *aft = SCMalloc(sizeof(JsonFlowLogThread));
@@ -477,7 +501,7 @@ static TmEcode JsonFlowLogThreadInit(ThreadVars *t, const void *initdata, void *
     /* Use the Ouptut Context (file pointer and mutex) */
     aft->flowlog_ctx = ((OutputCtx *)initdata)->data; //TODO
 
-    aft->buffer = MemBufferCreateNew(OUTPUT_BUFFER_SIZE);
+    aft->buffer = MemBufferCreateNew(JSON_OUTPUT_BUFFER_SIZE);
     if (aft->buffer == NULL) {
         SCFree(aft);
         return TM_ECODE_FAILED;
@@ -514,11 +538,3 @@ void JsonFlowLogRegister (void)
         "eve-log.flow", OutputFlowLogInitSub, JsonFlowLogger,
         JsonFlowLogThreadInit, JsonFlowLogThreadDeinit, NULL);
 }
-
-#else
-
-void JsonFlowLogRegister (void)
-{
-}
-
-#endif

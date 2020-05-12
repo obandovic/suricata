@@ -75,6 +75,8 @@ void DetectLuaRegister(void)
 {
     sigmatch_table[DETECT_LUA].name = "lua";
     sigmatch_table[DETECT_LUA].alias = "luajit";
+    sigmatch_table[DETECT_LUA].desc = "support for lua scripting";
+    sigmatch_table[DETECT_LUA].url = "/rules/rule-lua-scripting.html";
     sigmatch_table[DETECT_LUA].Setup = DetectLuaSetupNoSupport;
     sigmatch_table[DETECT_LUA].Free  = NULL;
     sigmatch_table[DETECT_LUA].RegisterTests = NULL;
@@ -88,15 +90,15 @@ void DetectLuaRegister(void)
 
 #include "util-lua.h"
 
-static int DetectLuaMatch (ThreadVars *, DetectEngineThreadCtx *,
+static int DetectLuaMatch (DetectEngineThreadCtx *,
         Packet *, const Signature *, const SigMatchCtx *);
-static int DetectLuaAppTxMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectLuaAppTxMatch (DetectEngineThreadCtx *det_ctx,
                                 Flow *f, uint8_t flags,
                                 void *state, void *txv, const Signature *s,
                                 const SigMatchCtx *ctx);
 static int DetectLuaSetup (DetectEngineCtx *, Signature *, const char *);
 static void DetectLuaRegisterTests(void);
-static void DetectLuaFree(void *);
+static void DetectLuaFree(DetectEngineCtx *, void *);
 static int g_smtp_generic_list_id = 0;
 
 static int InspectSmtpGeneric(ThreadVars *tv,
@@ -113,7 +115,7 @@ void DetectLuaRegister(void)
     sigmatch_table[DETECT_LUA].name = "lua";
     sigmatch_table[DETECT_LUA].alias = "luajit";
     sigmatch_table[DETECT_LUA].desc = "match via a lua script";
-    sigmatch_table[DETECT_LUA].url = DOC_URL DOC_VERSION "/rules/rule-lua-scripting.html";
+    sigmatch_table[DETECT_LUA].url = "/rules/rule-lua-scripting.html";
     sigmatch_table[DETECT_LUA].Match = DetectLuaMatch;
     sigmatch_table[DETECT_LUA].AppLayerTxMatch = DetectLuaAppTxMatch;
     sigmatch_table[DETECT_LUA].Setup = DetectLuaSetup;
@@ -215,7 +217,7 @@ void LuaDumpStack(lua_State *state)
 
 int DetectLuaMatchBuffer(DetectEngineThreadCtx *det_ctx,
         const Signature *s, const SigMatchData *smd,
-        uint8_t *buffer, uint32_t buffer_len, uint32_t offset,
+        const uint8_t *buffer, uint32_t buffer_len, uint32_t offset,
         Flow *f)
 {
     SCEnter();
@@ -319,7 +321,7 @@ int DetectLuaMatchBuffer(DetectEngineThreadCtx *det_ctx,
  * \retval 0 no match
  * \retval 1 match
  */
-static int DetectLuaMatch (ThreadVars *tv, DetectEngineThreadCtx *det_ctx,
+static int DetectLuaMatch (DetectEngineThreadCtx *det_ctx,
         Packet *p, const Signature *s, const SigMatchCtx *ctx)
 {
     SCEnter();
@@ -339,7 +341,7 @@ static int DetectLuaMatch (ThreadVars *tv, DetectEngineThreadCtx *det_ctx,
     else if (p->flowflags & FLOW_PKT_TOCLIENT)
         flags = STREAM_TOCLIENT;
 
-    LuaStateSetThreadVars(tlua->luastate, tv);
+    LuaStateSetThreadVars(tlua->luastate, det_ctx->tv);
 
     LuaExtensionsMatchSetup(tlua->luastate, lua, det_ctx,
             p->flow, p, flags);
@@ -451,7 +453,7 @@ static int DetectLuaMatch (ThreadVars *tv, DetectEngineThreadCtx *det_ctx,
     SCReturnInt(ret);
 }
 
-static int DetectLuaAppMatchCommon (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectLuaAppMatchCommon (DetectEngineThreadCtx *det_ctx,
         Flow *f, uint8_t flags, void *state,
         const Signature *s, const SigMatchCtx *ctx)
 {
@@ -564,12 +566,12 @@ static int DetectLuaAppMatchCommon (ThreadVars *t, DetectEngineThreadCtx *det_ct
  * \retval 0 no match
  * \retval 1 match
  */
-static int DetectLuaAppTxMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectLuaAppTxMatch (DetectEngineThreadCtx *det_ctx,
                                 Flow *f, uint8_t flags,
                                 void *state, void *txv, const Signature *s,
                                 const SigMatchCtx *ctx)
 {
-    return DetectLuaAppMatchCommon(t, det_ctx, f, flags, state, s, ctx);
+    return DetectLuaAppMatchCommon(det_ctx, f, flags, state, s, ctx);
 }
 
 #ifdef UNITTESTS
@@ -658,12 +660,13 @@ static void DetectLuaThreadFree(void *ctx)
 /**
  * \brief Parse the lua keyword
  *
+ * \param de_ctx Pointer to the detection engine context
  * \param str Pointer to the user provided option
  *
  * \retval lua pointer to DetectLuaData on success
  * \retval NULL on failure
  */
-static DetectLuaData *DetectLuaParse (const DetectEngineCtx *de_ctx, const char *str)
+static DetectLuaData *DetectLuaParse (DetectEngineCtx *de_ctx, const char *str)
 {
     DetectLuaData *lua = NULL;
 
@@ -689,7 +692,7 @@ static DetectLuaData *DetectLuaParse (const DetectEngineCtx *de_ctx, const char 
 
 error:
     if (lua != NULL)
-        DetectLuaFree(lua);
+        DetectLuaFree(de_ctx, lua);
     return NULL;
 }
 
@@ -1075,7 +1078,7 @@ static int DetectLuaSetup (DetectEngineCtx *de_ctx, Signature *s, const char *st
 
 error:
     if (lua != NULL)
-        DetectLuaFree(lua);
+        DetectLuaFree(de_ctx, lua);
     if (sm != NULL)
         SCFree(sm);
     return -1;
@@ -1107,7 +1110,7 @@ void DetectLuaPostSetup(Signature *s)
  *
  * \param ptr pointer to DetectLuaData
  */
-static void DetectLuaFree(void *ptr)
+static void DetectLuaFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     if (ptr != NULL) {
         DetectLuaData *lua = (DetectLuaData *)ptr;
@@ -1116,6 +1119,8 @@ static void DetectLuaFree(void *ptr)
             SCFree(lua->buffername);
         if (lua->filename)
             SCFree(lua->filename);
+
+        DetectUnregisterThreadCtxFuncs(de_ctx, NULL, lua, "lua");
 
         SCFree(lua);
     }

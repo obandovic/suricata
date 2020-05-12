@@ -104,8 +104,12 @@ typedef struct AppLayerParserState_ AppLayerParserState;
 #define FLOW_WRONG_THREAD               BIT_U32(25)
 /** Protocol detection told us flow is picked up in wrong direction (midstream) */
 #define FLOW_DIR_REVERSED               BIT_U32(26)
+/** Indicate that the flow did trigger an expectation creation */
+#define FLOW_HAS_EXPECTATION            BIT_U32(27)
 
 /* File flags */
+
+#define FLOWFILE_INIT                   0
 
 /** no magic on files in this flow */
 #define FLOWFILE_NO_MAGIC_TS            BIT_U16(0)
@@ -130,6 +134,19 @@ typedef struct AppLayerParserState_ AppLayerParserState;
 #define FLOWFILE_NO_SIZE_TS             BIT_U16(10)
 #define FLOWFILE_NO_SIZE_TC             BIT_U16(11)
 
+#define FLOWFILE_NONE_TS (FLOWFILE_NO_MAGIC_TS | \
+                          FLOWFILE_NO_STORE_TS | \
+                          FLOWFILE_NO_MD5_TS   | \
+                          FLOWFILE_NO_SHA1_TS  | \
+                          FLOWFILE_NO_SHA256_TS| \
+                          FLOWFILE_NO_SIZE_TS)
+#define FLOWFILE_NONE_TC (FLOWFILE_NO_MAGIC_TC | \
+                          FLOWFILE_NO_STORE_TC | \
+                          FLOWFILE_NO_MD5_TC   | \
+                          FLOWFILE_NO_SHA1_TC  | \
+                          FLOWFILE_NO_SHA256_TC| \
+                          FLOWFILE_NO_SIZE_TC)
+#define FLOWFILE_NONE    (FLOWFILE_NONE_TS|FLOWFILE_NONE_TC)
 
 #define FLOW_IS_IPV4(f) \
     (((f)->flags & FLOW_IPV4) == FLOW_IPV4)
@@ -282,7 +299,7 @@ typedef struct FlowKey_
     Port sp, dp;
     uint8_t proto;
     uint8_t recursion_level;
-
+    uint16_t vlan_id[2];
 } FlowKey;
 
 typedef struct FlowAddress_ {
@@ -347,7 +364,7 @@ typedef struct Flow_
     uint8_t vlan_idx;
 
     /** Incoming interface */
-    const struct LiveDevice_ *livedev;
+    struct LiveDevice_ *livedev;
 
     /** flow hash - the flow hash before hash table size mod. */
     uint32_t flow_hash;
@@ -379,7 +396,6 @@ typedef struct Flow_
     uint32_t flags;         /**< generic flags */
 
     uint16_t file_flags;    /**< file tracking/extraction flags */
-    /* coccinelle: Flow:file_flags:FLOWFILE_ */
 
     /** destination port to be used in protocol detection. This is meant
      *  for use with STARTTLS and HTTP CONNECT detection */
@@ -423,7 +439,7 @@ typedef struct Flow_
     uint32_t de_ctx_version;
 
     /** Thread ID for the stream/detect portion of this flow */
-    FlowThreadId thread_id;
+    FlowThreadId thread_id[2];
 
     /** ttl tracking */
     uint8_t min_ttl_toserver;
@@ -468,7 +484,9 @@ enum FlowState {
     FLOW_STATE_ESTABLISHED,
     FLOW_STATE_CLOSED,
     FLOW_STATE_LOCAL_BYPASSED,
+#ifdef CAPTURE_OFFLOAD
     FLOW_STATE_CAPTURE_BYPASSED,
+#endif
 };
 
 typedef struct FlowProtoTimeout_ {
@@ -481,6 +499,16 @@ typedef struct FlowProtoTimeout_ {
 typedef struct FlowProtoFreeFunc_ {
     void (*Freefunc)(void *);
 } FlowProtoFreeFunc;
+
+typedef struct FlowBypassInfo_ {
+    bool (* BypassUpdate)(Flow *f, void *data, time_t tsec);
+    void (* BypassFree)(void *data);
+    void *bypass_data;
+    uint64_t tosrcpktcnt;
+    uint64_t tosrcbytecnt;
+    uint64_t todstpktcnt;
+    uint64_t todstbytecnt;
+} FlowBypassInfo;
 
 /** \brief prepare packet for a life with flow
  *  Set PKT_WANTS_FLOW flag to incidate workers should do a flow lookup
@@ -521,6 +549,11 @@ void FlowUpdateState(Flow *f, enum FlowState s);
 int FlowSetMemcap(uint64_t size);
 uint64_t FlowGetMemcap(void);
 uint64_t FlowGetMemuse(void);
+
+int GetFlowBypassInfoID(void);
+void RegisterFlowBypassInfo(void);
+
+void FlowGetLastTimeAsParts(Flow *flow, uint64_t *secs, uint64_t *usecs);
 
 /** ----- Inline functions ----- */
 

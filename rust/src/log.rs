@@ -15,12 +15,11 @@
  * 02110-1301, USA.
  */
 
-extern crate libc;
-
+use std;
 use std::ffi::CString;
 use std::path::Path;
 
-use core::*;
+use crate::core::*;
 
 #[derive(Debug)]
 pub enum Level {
@@ -148,10 +147,10 @@ pub fn log_set_level(level: Level) {
 /// Rust unit tests).
 pub fn sc_log_message(level: Level,
                       filename: &str,
-                      line: libc::c_uint,
+                      line: std::os::raw::c_uint,
                       function: &str,
-                      code: libc::c_int,
-                      message: &str) -> libc::c_int
+                      code: std::os::raw::c_int,
+                      message: &str) -> std::os::raw::c_int
 {
     unsafe {
         if let Some(c) = SC {

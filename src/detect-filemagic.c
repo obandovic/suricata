@@ -71,18 +71,18 @@ void DetectFilemagicRegister(void)
 {
     sigmatch_table[DETECT_FILEMAGIC].name = "filemagic";
     sigmatch_table[DETECT_FILEMAGIC].desc = "match on the information libmagic returns about a file";
-    sigmatch_table[DETECT_FILEMAGIC].url = DOC_URL DOC_VERSION "/rules/file-keywords.html#filemagic";
+    sigmatch_table[DETECT_FILEMAGIC].url = "/rules/file-keywords.html#filemagic";
     sigmatch_table[DETECT_FILEMAGIC].Setup = DetectFilemagicSetupNoSupport;
     sigmatch_table[DETECT_FILEMAGIC].flags = SIGMATCH_QUOTES_MANDATORY|SIGMATCH_HANDLE_NEGATION;
 }
 
 #else /* HAVE_MAGIC */
 
-static int DetectFilemagicMatch (ThreadVars *, DetectEngineThreadCtx *, Flow *,
+static int DetectFilemagicMatch (DetectEngineThreadCtx *, Flow *,
         uint8_t, File *, const Signature *, const SigMatchCtx *);
 static int DetectFilemagicSetup (DetectEngineCtx *, Signature *, const char *);
 static void DetectFilemagicRegisterTests(void);
-static void DetectFilemagicFree(void *);
+static void DetectFilemagicFree(DetectEngineCtx *, void *);
 static int g_file_match_list_id = 0;
 
 static int DetectFilemagicSetupSticky(DetectEngineCtx *de_ctx, Signature *s, const char *str);
@@ -90,7 +90,7 @@ static int g_file_magic_buffer_id = 0;
 
 static int PrefilterMpmFilemagicRegister(DetectEngineCtx *de_ctx,
         SigGroupHead *sgh, MpmCtx *mpm_ctx,
-        const DetectMpmAppLayerRegistery *mpm_reg, int list_id);
+        const DetectBufferMpmRegistery *mpm_reg, int list_id);
 static int DetectEngineInspectFilemagic(
         DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
         const DetectEngineAppInspectionEngine *engine,
@@ -106,7 +106,7 @@ void DetectFilemagicRegister(void)
 {
     sigmatch_table[DETECT_FILEMAGIC].name = "filemagic";
     sigmatch_table[DETECT_FILEMAGIC].desc = "match on the information libmagic returns about a file";
-    sigmatch_table[DETECT_FILEMAGIC].url = DOC_URL DOC_VERSION "/rules/file-keywords.html#filemagic";
+    sigmatch_table[DETECT_FILEMAGIC].url = "/rules/file-keywords.html#filemagic";
     sigmatch_table[DETECT_FILEMAGIC].FileMatch = DetectFilemagicMatch;
     sigmatch_table[DETECT_FILEMAGIC].Setup = DetectFilemagicSetup;
     sigmatch_table[DETECT_FILEMAGIC].Free  = DetectFilemagicFree;
@@ -116,7 +116,7 @@ void DetectFilemagicRegister(void)
 
     sigmatch_table[DETECT_FILE_MAGIC].name = "file.magic";
     sigmatch_table[DETECT_FILE_MAGIC].desc = "sticky buffer to match on the file magic";
-    sigmatch_table[DETECT_FILE_MAGIC].url = DOC_URL DOC_VERSION "/rules/file-keywords.html#filemagic";
+    sigmatch_table[DETECT_FILE_MAGIC].url = "/rules/file-keywords.html#filemagic";
     sigmatch_table[DETECT_FILE_MAGIC].Setup = DetectFilemagicSetupSticky;
     sigmatch_table[DETECT_FILE_MAGIC].flags = SIGMATCH_NOOPT|SIGMATCH_INFO_STICKY_BUFFER;
 
@@ -231,7 +231,7 @@ static int FilemagicThreadLookup(magic_t *ctx, File *file)
  * \retval 0 no match
  * \retval 1 match
  */
-static int DetectFilemagicMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectFilemagicMatch (DetectEngineThreadCtx *det_ctx,
         Flow *f, uint8_t flags, File *file, const Signature *s, const SigMatchCtx *m)
 {
     SCEnter();
@@ -283,12 +283,13 @@ static int DetectFilemagicMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
 /**
  * \brief Parse the filemagic keyword
  *
+ * \param de_ctx Pointer to the detection engine context
  * \param idstr Pointer to the user provided option
  *
  * \retval filemagic pointer to DetectFilemagicData on success
  * \retval NULL on failure
  */
-static DetectFilemagicData *DetectFilemagicParse (const char *str, bool negate)
+static DetectFilemagicData *DetectFilemagicParse (DetectEngineCtx *de_ctx, const char *str, bool negate)
 {
     DetectFilemagicData *filemagic = NULL;
 
@@ -333,7 +334,7 @@ static DetectFilemagicData *DetectFilemagicParse (const char *str, bool negate)
 
 error:
     if (filemagic != NULL)
-        DetectFilemagicFree(filemagic);
+        DetectFilemagicFree(de_ctx, filemagic);
     return NULL;
 }
 
@@ -411,7 +412,7 @@ static int DetectFilemagicSetup (DetectEngineCtx *de_ctx, Signature *s, const ch
 {
     SigMatch *sm = NULL;
 
-    DetectFilemagicData *filemagic = DetectFilemagicParse(str, s->init_data->negated);
+    DetectFilemagicData *filemagic = DetectFilemagicParse(de_ctx, str, s->init_data->negated);
     if (filemagic == NULL)
         return -1;
 
@@ -438,7 +439,7 @@ static int DetectFilemagicSetup (DetectEngineCtx *de_ctx, Signature *s, const ch
     return 0;
 
 error:
-    DetectFilemagicFree(filemagic);
+    DetectFilemagicFree(de_ctx, filemagic);
     if (sm != NULL)
         SCFree(sm);
     return -1;
@@ -449,7 +450,7 @@ error:
  *
  * \param filemagic pointer to DetectFilemagicData
  */
-static void DetectFilemagicFree(void *ptr)
+static void DetectFilemagicFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     if (ptr != NULL) {
         DetectFilemagicData *filemagic = (DetectFilemagicData *)ptr;
@@ -535,8 +536,7 @@ static int DetectEngineInspectFilemagic(
         transforms = engine->v2.transforms;
     }
 
-    FileContainer *ffc = AppLayerParserGetFiles(f->proto, f->alproto,
-                                                f->alstate, flags);
+    FileContainer *ffc = AppLayerParserGetFiles(f, flags);
     if (ffc == NULL) {
         return DETECT_ENGINE_INSPECT_SIG_NO_MATCH;
     }
@@ -596,8 +596,7 @@ static void PrefilterTxFilemagic(DetectEngineThreadCtx *det_ctx,
     const MpmCtx *mpm_ctx = ctx->mpm_ctx;
     const int list_id = ctx->list_id;
 
-    FileContainer *ffc = AppLayerParserGetFiles(f->proto, f->alproto,
-                                                f->alstate, flags);
+    FileContainer *ffc = AppLayerParserGetFiles(f, flags);
     int local_file_id = 0;
     if (ffc != NULL) {
         File *file = ffc->head;
@@ -626,17 +625,17 @@ static void PrefilterMpmFilemagicFree(void *ptr)
 
 static int PrefilterMpmFilemagicRegister(DetectEngineCtx *de_ctx,
         SigGroupHead *sgh, MpmCtx *mpm_ctx,
-        const DetectMpmAppLayerRegistery *mpm_reg, int list_id)
+        const DetectBufferMpmRegistery *mpm_reg, int list_id)
 {
     PrefilterMpmFilemagic *pectx = SCCalloc(1, sizeof(*pectx));
     if (pectx == NULL)
         return -1;
     pectx->list_id = list_id;
     pectx->mpm_ctx = mpm_ctx;
-    pectx->transforms = &mpm_reg->v2.transforms;
+    pectx->transforms = &mpm_reg->transforms;
 
     return PrefilterAppendTxEngine(de_ctx, sgh, PrefilterTxFilemagic,
-            mpm_reg->v2.alproto, mpm_reg->v2.tx_min_progress,
+            mpm_reg->app_v2.alproto, mpm_reg->app_v2.tx_min_progress,
             pectx, PrefilterMpmFilemagicFree, mpm_reg->pname);
 }
 #ifdef UNITTESTS /* UNITTESTS */
@@ -646,9 +645,9 @@ static int PrefilterMpmFilemagicRegister(DetectEngineCtx *de_ctx,
  */
 static int DetectFilemagicTestParse01 (void)
 {
-    DetectFilemagicData *dnd = DetectFilemagicParse("secret.pdf", false);
+    DetectFilemagicData *dnd = DetectFilemagicParse(NULL, "secret.pdf", false);
     if (dnd != NULL) {
-        DetectFilemagicFree(dnd);
+        DetectFilemagicFree(NULL, dnd);
         return 1;
     }
     return 0;
@@ -661,13 +660,13 @@ static int DetectFilemagicTestParse02 (void)
 {
     int result = 0;
 
-    DetectFilemagicData *dnd = DetectFilemagicParse("backup.tar.gz", false);
+    DetectFilemagicData *dnd = DetectFilemagicParse(NULL, "backup.tar.gz", false);
     if (dnd != NULL) {
         if (dnd->len == 13 && memcmp(dnd->name, "backup.tar.gz", 13) == 0) {
             result = 1;
         }
 
-        DetectFilemagicFree(dnd);
+        DetectFilemagicFree(NULL, dnd);
         return result;
     }
     return 0;
@@ -680,13 +679,13 @@ static int DetectFilemagicTestParse03 (void)
 {
     int result = 0;
 
-    DetectFilemagicData *dnd = DetectFilemagicParse("cmd.exe", false);
+    DetectFilemagicData *dnd = DetectFilemagicParse(NULL, "cmd.exe", false);
     if (dnd != NULL) {
         if (dnd->len == 7 && memcmp(dnd->name, "cmd.exe", 7) == 0) {
             result = 1;
         }
 
-        DetectFilemagicFree(dnd);
+        DetectFilemagicFree(NULL, dnd);
         return result;
     }
     return 0;

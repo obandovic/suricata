@@ -46,7 +46,7 @@ void DetectOffsetRegister (void)
 {
     sigmatch_table[DETECT_OFFSET].name = "offset";
     sigmatch_table[DETECT_OFFSET].desc = "designate from which byte in the payload will be checked to find a match";
-    sigmatch_table[DETECT_OFFSET].url = DOC_URL DOC_VERSION "/rules/payload-keywords.html#offset";
+    sigmatch_table[DETECT_OFFSET].url = "/rules/payload-keywords.html#offset";
     sigmatch_table[DETECT_OFFSET].Match = NULL;
     sigmatch_table[DETECT_OFFSET].Setup = DetectOffsetSetup;
     sigmatch_table[DETECT_OFFSET].Free  = NULL;
@@ -106,7 +106,7 @@ int DetectOffsetSetup (DetectEngineCtx *de_ctx, Signature *s, const char *offset
         cd->offset = ((DetectByteExtractData *)bed_sm->ctx)->local_id;
         cd->flags |= DETECT_CONTENT_OFFSET_BE;
     } else {
-        if (ByteExtractStringUint16(&cd->offset, 0, 0, str) != (int)strlen(str))
+        if (StringParseUint16(&cd->offset, 0, 0, str) < 0)
         {
             SCLogError(SC_ERR_INVALID_SIGNATURE, "invalid value for offset: %s.", str);
             goto end;

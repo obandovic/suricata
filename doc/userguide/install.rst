@@ -1,3 +1,5 @@
+.. _installation:
+
 Installation
 ============
 
@@ -16,8 +18,8 @@ Installing from the source distribution files gives the most control over the Su
 
 Basic steps::
 
-    tar xzvf suricata-4.1.2.tar.gz
-    cd suricata-4.1.0
+    tar xzvf suricata-5.0.0.tar.gz
+    cd suricata-5.0.0
     ./configure
     make
     make install
@@ -51,14 +53,10 @@ Common configure options
 
     Enables Lua support for detection and output.
 
-.. option:: --enable-geopip
+.. option:: --enable-geoip
 
     Enables GeoIP support for detection.
 
-.. option:: --disable-rust
-
-    Disables Rust support. Rust support is enabled by default if rustc/cargo
-    are available.
 
 Dependencies
 ^^^^^^^^^^^^
@@ -129,18 +127,22 @@ To use it::
 Debian
 ^^^^^^
 
-In Debian 9 (Stretch) do::
+In Debian 9 (stretch) and later do::
 
-    apt-get install suricata
+    sudo apt-get install suricata
 
-In Debian Jessie Suricata is out of date, but an updated version is in Debian Backports.
+In the "stable" version of Debian, Suricata is usually not available in the
+latest version. A more recent version is often available from Debian backports,
+if it can be built there.
 
-As root do::
+To use backports, the backports repository for the current stable
+distribution needs to be added to the system-wide sources list.
+For Debian 10 (buster), for instance, run the following as root::
 
-    echo "deb http://http.debian.net/debian jessie-backports main" > \
+    echo "deb http://http.debian.net/debian buster-backports main" > \
         /etc/apt/sources.list.d/backports.list
     apt-get update
-    apt-get install suricata -t jessie-backports
+    apt-get install suricata -t buster-backports
 
 Fedora
 ^^^^^^

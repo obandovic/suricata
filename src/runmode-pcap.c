@@ -31,12 +31,11 @@
 #include "util-runmodes.h"
 #include "util-atomic.h"
 #include "util-misc.h"
-
-static const char *default_mode = NULL;
+#include "util-byte.h"
 
 const char *RunModeIdsGetDefaultMode(void)
 {
-    return default_mode;
+    return "autofp";
 }
 
 int RunModeIdsPcapWorkers(void);
@@ -46,7 +45,6 @@ void RunModeIdsPcapRegister(void)
     RunModeRegisterNewRunMode(RUNMODE_PCAP_DEV, "single",
                               "Single threaded pcap live mode",
                               RunModeIdsPcapSingle);
-    default_mode = "autofp";
     RunModeRegisterNewRunMode(RUNMODE_PCAP_DEV, "autofp",
                               "Multi threaded pcap live mode.  Packets from "
                               "each flow are assigned to a single detect thread, "
@@ -66,7 +64,7 @@ static void PcapDerefConfig(void *conf)
 {
     PcapIfaceConfig *pfp = (PcapIfaceConfig *)conf;
     /* Pcap config is used only once but cost of this low. */
-    if (SC_ATOMIC_SUB(pfp->ref, 1) == 0) {
+    if (SC_ATOMIC_SUB(pfp->ref, 1) == 1) {
         SCFree(pfp);
     }
 }
@@ -147,7 +145,11 @@ static void *ParsePcapConfig(const char *iface)
         aconf->threads = 1;
     } else {
         if (threadsstr != NULL) {
-            aconf->threads = atoi(threadsstr);
+            if (StringParseInt32(&aconf->threads, 10, 0, (const char *)threadsstr) < 0) {
+                SCLogWarning(SC_ERR_INVALID_VALUE, "Invalid value for "
+                             "pcap.threads: %s, resetting to 1", threadsstr);
+                aconf->threads = 1;
+            }
         }
     }
     if (aconf->threads == 0) {

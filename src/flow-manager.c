@@ -41,6 +41,7 @@
 #include "flow-private.h"
 #include "flow-timeout.h"
 #include "flow-manager.h"
+#include "flow-storage.h"
 
 #include "stream-tcp-private.h"
 #include "stream-tcp-reassemble.h"
@@ -70,6 +71,9 @@
 /* Run mode selected at suricata.c */
 extern int run_mode;
 
+/** queue to pass flows to cleanup/log thread(s) */
+FlowQueue flow_recycle_q;
+
 /* multi flow mananger support */
 static uint32_t flowmgr_number = 1;
 /* atomic counter for flow managers, to assign instance id */
@@ -82,6 +86,11 @@ SC_ATOMIC_DECLARE(uint32_t, flowrec_cnt);
 
 SC_ATOMIC_EXTERN(unsigned int, flow_flags);
 
+SCCtrlCondT flow_manager_ctrl_cond;
+SCCtrlMutex flow_manager_ctrl_mutex;
+
+SCCtrlCondT flow_recycler_ctrl_cond;
+SCCtrlMutex flow_recycler_ctrl_mutex;
 
 typedef FlowProtoTimeout *FlowProtoTimeoutPtr;
 SC_ATOMIC_DECLARE(FlowProtoTimeoutPtr, flow_timeouts);
@@ -122,6 +131,10 @@ typedef struct FlowTimeoutCounters_ {
     uint32_t rows_empty;
     uint32_t rows_busy;
     uint32_t rows_maxlen;
+
+    uint32_t bypassed_count;
+    uint64_t bypassed_pkts;
+    uint64_t bypassed_bytes;
 } FlowTimeoutCounters;
 
 /**
@@ -132,11 +145,6 @@ typedef struct FlowTimeoutCounters_ {
  */
 void FlowDisableFlowManagerThread(void)
 {
-#ifdef AFLFUZZ_DISABLE_MGTTHREADS
-    return;
-#endif
-    ThreadVars *tv = NULL;
-
     /* wake up threads */
     uint32_t u;
     for (u = 0; u < flowmgr_number; u++)
@@ -144,15 +152,12 @@ void FlowDisableFlowManagerThread(void)
 
     SCMutexLock(&tv_root_lock);
     /* flow manager thread(s) is/are a part of mgmt threads */
-    tv = tv_root[TVT_MGMT];
-    while (tv != NULL)
-    {
+    for (ThreadVars *tv = tv_root[TVT_MGMT]; tv != NULL; tv = tv->next) {
         if (strncasecmp(tv->name, thread_name_flow_mgr,
             strlen(thread_name_flow_mgr)) == 0)
         {
             TmThreadsSetFlag(tv, THV_KILL);
         }
-        tv = tv->next;
     }
     SCMutexUnlock(&tv_root_lock);
 
@@ -168,9 +173,7 @@ again:
     }
 
     SCMutexLock(&tv_root_lock);
-    tv = tv_root[TVT_MGMT];
-    while (tv != NULL)
-    {
+    for (ThreadVars *tv = tv_root[TVT_MGMT]; tv != NULL; tv = tv->next) {
         if (strncasecmp(tv->name, thread_name_flow_mgr,
             strlen(thread_name_flow_mgr)) == 0)
         {
@@ -181,13 +184,8 @@ again:
                 goto again;
             }
         }
-        tv = tv->next;
     }
     SCMutexUnlock(&tv_root_lock);
-
-    /* wake up threads, another try */
-    for (u = 0; u < flowmgr_number; u++)
-        SCCtrlCondSignal(&flow_manager_ctrl_cond);
 
     /* reset count, so we can kill and respawn (unix socket) */
     SC_ATOMIC_SET(flowmgr_cnt, 0);
@@ -217,9 +215,11 @@ static inline uint32_t FlowGetFlowTimeout(const Flow *f, enum FlowState state)
         case FLOW_STATE_CLOSED:
             timeout = flow_timeouts[f->protomap].closed_timeout;
             break;
+#ifdef CAPTURE_OFFLOAD
         case FLOW_STATE_CAPTURE_BYPASSED:
             timeout = FLOW_BYPASSED_TIMEOUT;
             break;
+#endif
         case FLOW_STATE_LOCAL_BYPASSED:
             timeout = flow_timeouts[f->protomap].bypassed_timeout;
             break;
@@ -236,7 +236,7 @@ static inline uint32_t FlowGetFlowTimeout(const Flow *f, enum FlowState state)
  *  \retval 0 not timed out
  *  \retval 1 timed out
  */
-static int FlowManagerFlowTimeout(const Flow *f, enum FlowState state, struct timeval *ts, int32_t *next_ts)
+static int FlowManagerFlowTimeout(Flow *f, enum FlowState state, struct timeval *ts, int32_t *next_ts)
 {
     /* set the timeout value according to the flow operating mode,
      * flow's state and protocol.*/
@@ -254,6 +254,52 @@ static int FlowManagerFlowTimeout(const Flow *f, enum FlowState state, struct ti
     return 1;
 }
 
+static inline int FlowBypassedTimeout(Flow *f, struct timeval *ts,
+                                      FlowTimeoutCounters *counters)
+{
+#ifdef CAPTURE_OFFLOAD
+    if (SC_ATOMIC_GET(f->flow_state) != FLOW_STATE_CAPTURE_BYPASSED) {
+        return 1;
+    }
+
+    FlowBypassInfo *fc = FlowGetStorageById(f, GetFlowBypassInfoID());
+    if (fc && fc->BypassUpdate) {
+        /* flow will be possibly updated */
+        uint64_t pkts_tosrc = fc->tosrcpktcnt;
+        uint64_t bytes_tosrc = fc->tosrcbytecnt;
+        uint64_t pkts_todst = fc->todstpktcnt;
+        uint64_t bytes_todst = fc->todstbytecnt;
+        bool update = fc->BypassUpdate(f, fc->bypass_data, ts->tv_sec);
+        if (update) {
+            SCLogDebug("Updated flow: %"PRId64"", FlowGetId(f));
+            pkts_tosrc = fc->tosrcpktcnt - pkts_tosrc;
+            bytes_tosrc = fc->tosrcbytecnt - bytes_tosrc;
+            pkts_todst = fc->todstpktcnt - pkts_todst;
+            bytes_todst = fc->todstbytecnt - bytes_todst;
+            if (f->livedev) {
+                SC_ATOMIC_ADD(f->livedev->bypassed,
+                        pkts_tosrc + pkts_todst);
+            }
+            counters->bypassed_pkts += pkts_tosrc + pkts_todst;
+            counters->bypassed_bytes += bytes_tosrc + bytes_todst;
+            return 0;
+        } else {
+            SCLogDebug("No new packet, dead flow %"PRId64"", FlowGetId(f));
+            if (f->livedev) {
+                if (FLOW_IS_IPV4(f)) {
+                    LiveDevSubBypassStats(f->livedev, 1, AF_INET);
+                } else if (FLOW_IS_IPV6(f)) {
+                    LiveDevSubBypassStats(f->livedev, 1, AF_INET6);
+                }
+            }
+            counters->bypassed_count++;
+            return 1;
+        }
+    }
+#endif /* CAPTURE_OFFLOAD */
+    return 1;
+}
+
 /** \internal
  *  \brief See if we can really discard this flow. Check use_cnt reference
  *         counter and force reassembly if necessary.
@@ -264,7 +310,8 @@ static int FlowManagerFlowTimeout(const Flow *f, enum FlowState state, struct ti
  *  \retval 0 not timed out just yet
  *  \retval 1 fully timed out, lets kill it
  */
-static int FlowManagerFlowTimedOut(Flow *f, struct timeval *ts)
+static inline int FlowManagerFlowTimedOut(Flow *f, struct timeval *ts,
+                                   FlowTimeoutCounters *counters)
 {
     /* never prune a flow that is used by a packet we
      * are currently processing in one of the threads */
@@ -272,9 +319,17 @@ static int FlowManagerFlowTimedOut(Flow *f, struct timeval *ts)
         return 0;
     }
 
+    if (!FlowBypassedTimeout(f, ts, counters)) {
+        return 0;
+    }
+
     int server = 0, client = 0;
 
     if (!(f->flags & FLOW_TIMEOUT_REASSEMBLY_DONE) &&
+#ifdef CAPTURE_OFFLOAD
+            SC_ATOMIC_GET(f->flow_state) != FLOW_STATE_CAPTURE_BYPASSED &&
+#endif
+            SC_ATOMIC_GET(f->flow_state) != FLOW_STATE_LOCAL_BYPASSED &&
             FlowForceReassemblyNeedReassembly(f, &server, &client) == 1) {
         FlowForceReassemblyForFlow(f, server, client);
         return 0;
@@ -336,7 +391,7 @@ static uint32_t FlowManagerHashRowTimeout(Flow *f, struct timeval *ts,
 
         /* check if the flow is fully timed out and
          * ready to be discarded. */
-        if (FlowManagerFlowTimedOut(f, ts) == 1) {
+        if (FlowManagerFlowTimedOut(f, ts, counters) == 1) {
             /* remove from the hash */
             if (f->hprev != NULL)
                 f->hprev->hnext = f->hnext;
@@ -361,8 +416,10 @@ static uint32_t FlowManagerHashRowTimeout(Flow *f, struct timeval *ts,
                 f->flow_end_flags |= FLOW_END_FLAG_STATE_CLOSED;
             else if (state == FLOW_STATE_LOCAL_BYPASSED)
                 f->flow_end_flags |= FLOW_END_FLAG_STATE_BYPASSED;
+#ifdef CAPTURE_OFFLOAD
             else if (state == FLOW_STATE_CAPTURE_BYPASSED)
                 f->flow_end_flags |= FLOW_END_FLAG_STATE_BYPASSED;
+#endif
 
             if (emergency)
                 f->flow_end_flags |= FLOW_END_FLAG_EMERGENCY;
@@ -387,7 +444,9 @@ static uint32_t FlowManagerHashRowTimeout(Flow *f, struct timeval *ts,
                     counters->clo++;
                     break;
                 case FLOW_STATE_LOCAL_BYPASSED:
+#ifdef CAPTURE_OFFLOAD
                 case FLOW_STATE_CAPTURE_BYPASSED:
+#endif
                     counters->byp++;
                     break;
             }
@@ -535,11 +594,11 @@ static uint32_t FlowManagerHashRowCleanup(Flow *f)
  *
  *  \retval cnt number of removes out flows
  */
-static uint32_t FlowCleanupHash(void){
-    uint32_t idx = 0;
+static uint32_t FlowCleanupHash(void)
+{
     uint32_t cnt = 0;
 
-    for (idx = 0; idx < flow_config.hash_size; idx++) {
+    for (uint32_t idx = 0; idx < flow_config.hash_size; idx++) {
         FlowBucket *fb = &flow_hash[idx];
 
         FBLOCK_LOCK(fb);
@@ -583,6 +642,10 @@ typedef struct FlowManagerThreadData_ {
     uint16_t flow_mgr_rows_busy;
     uint16_t flow_mgr_rows_maxlen;
 
+    uint16_t flow_bypassed_cnt_clo;
+    uint16_t flow_bypassed_pkts;
+    uint16_t flow_bypassed_bytes;
+
 } FlowManagerThreadData;
 
 static TmEcode FlowManagerThreadInit(ThreadVars *t, const void *initdata, void **data)
@@ -597,9 +660,9 @@ static TmEcode FlowManagerThreadInit(ThreadVars *t, const void *initdata, void *
     /* set the min and max value used for hash row walking
      * each thread has it's own section of the flow hash */
     uint32_t range = flow_config.hash_size / flowmgr_number;
-    if (ftd->instance == 1)
+    if (ftd->instance == 0)
         ftd->max = range;
-    else if (ftd->instance == flowmgr_number) {
+    else if ((ftd->instance + 1) == flowmgr_number) {
         ftd->min = (range * (ftd->instance - 1));
         ftd->max = flow_config.hash_size;
     } else {
@@ -633,6 +696,10 @@ static TmEcode FlowManagerThreadInit(ThreadVars *t, const void *initdata, void *
     ftd->flow_mgr_rows_empty = StatsRegisterCounter("flow_mgr.rows_empty", t);
     ftd->flow_mgr_rows_busy = StatsRegisterCounter("flow_mgr.rows_busy", t);
     ftd->flow_mgr_rows_maxlen = StatsRegisterCounter("flow_mgr.rows_maxlen", t);
+
+    ftd->flow_bypassed_cnt_clo = StatsRegisterCounter("flow_bypassed.closed", t);
+    ftd->flow_bypassed_pkts = StatsRegisterCounter("flow_bypassed.pkts", t);
+    ftd->flow_bypassed_bytes = StatsRegisterCounter("flow_bypassed.bytes", t);
 
     PacketPoolInit();
     return TM_ECODE_OK;
@@ -670,6 +737,12 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
 */
     memset(&ts, 0, sizeof(ts));
 
+    /* don't start our activities until time is setup */
+    while (!TimeModeIsReady()) {
+        if (suricata_ctl_flags != 0)
+            return TM_ECODE_OK;
+    }
+
     while (1)
     {
         if (TmThreadsCheckFlag(th_v, THV_PAUSE)) {
@@ -700,7 +773,7 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
             FlowUpdateSpareFlows();
 
         /* try to time out flows */
-        FlowTimeoutCounters counters = { 0, 0, 0, 0, 0,0,0,0,0,0,0,0,0,0,0};
+        FlowTimeoutCounters counters = { 0, 0, 0, 0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0};
         FlowTimeoutHash(&ts, 0 /* check all */, ftd->min, ftd->max, &counters);
 
 
@@ -734,6 +807,10 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
         StatsSetUI64(th_v, ftd->flow_mgr_rows_maxlen, (uint64_t)counters.rows_maxlen);
         StatsSetUI64(th_v, ftd->flow_mgr_rows_busy, (uint64_t)counters.rows_busy);
         StatsSetUI64(th_v, ftd->flow_mgr_rows_empty, (uint64_t)counters.rows_empty);
+
+        StatsAddUI64(th_v, ftd->flow_bypassed_cnt_clo, (uint64_t)counters.bypassed_count);
+        StatsAddUI64(th_v, ftd->flow_bypassed_pkts, (uint64_t)counters.bypassed_pkts);
+        StatsAddUI64(th_v, ftd->flow_bypassed_bytes, (uint64_t)counters.bypassed_bytes);
 
         uint32_t len = 0;
         FQLOCK_LOCK(&flow_spare_q);
@@ -799,16 +876,12 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
 /** \brief spawn the flow manager thread */
 void FlowManagerThreadSpawn()
 {
-#ifdef AFLFUZZ_DISABLE_MGTTHREADS
-    return;
-#endif
     intmax_t setting = 1;
     (void)ConfGetInt("flow.managers", &setting);
 
     if (setting < 1 || setting > 1024) {
-        SCLogError(SC_ERR_INVALID_ARGUMENTS,
+        FatalError(SC_ERR_INVALID_ARGUMENTS,
                 "invalid flow.managers setting %"PRIdMAX, setting);
-        exit(EXIT_FAILURE);
     }
     flowmgr_number = (uint32_t)setting;
 
@@ -818,25 +891,19 @@ void FlowManagerThreadSpawn()
 
     StatsRegisterGlobalCounter("flow.memuse", FlowGetMemuse);
 
-    uint32_t u;
-    for (u = 0; u < flowmgr_number; u++)
-    {
-        ThreadVars *tv_flowmgr = NULL;
-
+    for (uint32_t u = 0; u < flowmgr_number; u++) {
         char name[TM_THREAD_NAME_MAX];
         snprintf(name, sizeof(name), "%s#%02u", thread_name_flow_mgr, u+1);
 
-        tv_flowmgr = TmThreadCreateMgmtThreadByName(name,
+        ThreadVars *tv_flowmgr = TmThreadCreateMgmtThreadByName(name,
                 "FlowManager", 0);
         BUG_ON(tv_flowmgr == NULL);
 
         if (tv_flowmgr == NULL) {
-            printf("ERROR: TmThreadsCreate failed\n");
-            exit(1);
+            FatalError(SC_ERR_FATAL, "flow manager thread creation failed");
         }
         if (TmThreadSpawn(tv_flowmgr) != TM_ECODE_OK) {
-            printf("ERROR: TmThreadSpawn failed\n");
-            exit(1);
+            FatalError(SC_ERR_FATAL, "flow manager thread spawn failed");
         }
     }
     return;
@@ -960,16 +1027,12 @@ static int FlowRecyclerReadyToShutdown(void)
 /** \brief spawn the flow recycler thread */
 void FlowRecyclerThreadSpawn()
 {
-#ifdef AFLFUZZ_DISABLE_MGTTHREADS
-    return;
-#endif
     intmax_t setting = 1;
     (void)ConfGetInt("flow.recyclers", &setting);
 
     if (setting < 1 || setting > 1024) {
-        SCLogError(SC_ERR_INVALID_ARGUMENTS,
+        FatalError(SC_ERR_INVALID_ARGUMENTS,
                 "invalid flow.recyclers setting %"PRIdMAX, setting);
-        exit(EXIT_FAILURE);
     }
     flowrec_number = (uint32_t)setting;
 
@@ -978,26 +1041,18 @@ void FlowRecyclerThreadSpawn()
     SCCtrlCondInit(&flow_recycler_ctrl_cond, NULL);
     SCCtrlMutexInit(&flow_recycler_ctrl_mutex, NULL);
 
-
-    uint32_t u;
-    for (u = 0; u < flowrec_number; u++)
-    {
-        ThreadVars *tv_flowmgr = NULL;
-
+    for (uint32_t u = 0; u < flowrec_number; u++) {
         char name[TM_THREAD_NAME_MAX];
         snprintf(name, sizeof(name), "%s#%02u", thread_name_flow_rec, u+1);
 
-        tv_flowmgr = TmThreadCreateMgmtThreadByName(name,
+        ThreadVars *tv_flowrec = TmThreadCreateMgmtThreadByName(name,
                 "FlowRecycler", 0);
-        BUG_ON(tv_flowmgr == NULL);
 
-        if (tv_flowmgr == NULL) {
-            printf("ERROR: TmThreadsCreate failed\n");
-            exit(1);
+        if (tv_flowrec == NULL) {
+            FatalError(SC_ERR_FATAL, "flow recycler thread creation failed");
         }
-        if (TmThreadSpawn(tv_flowmgr) != TM_ECODE_OK) {
-            printf("ERROR: TmThreadSpawn failed\n");
-            exit(1);
+        if (TmThreadSpawn(tv_flowrec) != TM_ECODE_OK) {
+            FatalError(SC_ERR_FATAL, "flow recycler thread spawn failed");
         }
     }
     return;
@@ -1013,10 +1068,6 @@ void FlowRecyclerThreadSpawn()
  */
 void FlowDisableFlowRecyclerThread(void)
 {
-#ifdef AFLFUZZ_DISABLE_MGTTHREADS
-    return;
-#endif
-    ThreadVars *tv = NULL;
     int cnt = 0;
 
     /* move all flows still in the hash to the recycler queue */
@@ -1029,22 +1080,19 @@ void FlowDisableFlowRecyclerThread(void)
     } while (FlowRecyclerReadyToShutdown() == 0);
 
     /* wake up threads */
-    uint32_t u;
-    for (u = 0; u < flowrec_number; u++)
+    for (uint32_t u = 0; u < flowrec_number; u++) {
         SCCtrlCondSignal(&flow_recycler_ctrl_cond);
+    }
 
     SCMutexLock(&tv_root_lock);
     /* flow recycler thread(s) is/are a part of mgmt threads */
-    tv = tv_root[TVT_MGMT];
-    while (tv != NULL)
-    {
+    for (ThreadVars *tv = tv_root[TVT_MGMT]; tv != NULL; tv = tv->next) {
         if (strncasecmp(tv->name, thread_name_flow_rec,
             strlen(thread_name_flow_rec)) == 0)
         {
             TmThreadsSetFlag(tv, THV_KILL);
             cnt++;
         }
-        tv = tv->next;
     }
     SCMutexUnlock(&tv_root_lock);
 
@@ -1060,9 +1108,7 @@ again:
     }
 
     SCMutexLock(&tv_root_lock);
-    tv = tv_root[TVT_MGMT];
-    while (tv != NULL)
-    {
+    for (ThreadVars *tv = tv_root[TVT_MGMT]; tv != NULL; tv = tv->next) {
         if (strncasecmp(tv->name, thread_name_flow_rec,
             strlen(thread_name_flow_rec)) == 0)
         {
@@ -1073,13 +1119,8 @@ again:
                 goto again;
             }
         }
-        tv = tv->next;
     }
     SCMutexUnlock(&tv_root_lock);
-
-    /* wake up threads, another try */
-    for (u = 0; u < flowrec_number; u++)
-        SCCtrlCondSignal(&flow_recycler_ctrl_cond);
 
     /* reset count, so we can kill and respawn (unix socket) */
     SC_ATOMIC_SET(flowrec_cnt, 0);
@@ -1091,14 +1132,13 @@ void TmModuleFlowManagerRegister (void)
     tmm_modules[TMM_FLOWMANAGER].name = "FlowManager";
     tmm_modules[TMM_FLOWMANAGER].ThreadInit = FlowManagerThreadInit;
     tmm_modules[TMM_FLOWMANAGER].ThreadDeinit = FlowManagerThreadDeinit;
-//    tmm_modules[TMM_FLOWMANAGER].RegisterTests = FlowManagerRegisterTests;
     tmm_modules[TMM_FLOWMANAGER].Management = FlowManager;
     tmm_modules[TMM_FLOWMANAGER].cap_flags = 0;
     tmm_modules[TMM_FLOWMANAGER].flags = TM_FLAG_MANAGEMENT_TM;
     SCLogDebug("%s registered", tmm_modules[TMM_FLOWMANAGER].name);
 
     SC_ATOMIC_INIT(flowmgr_cnt);
-    SC_ATOMIC_INIT(flow_timeouts);
+    SC_ATOMIC_INITPTR(flow_timeouts);
 }
 
 void TmModuleFlowRecyclerRegister (void)
@@ -1106,7 +1146,6 @@ void TmModuleFlowRecyclerRegister (void)
     tmm_modules[TMM_FLOWRECYCLER].name = "FlowRecycler";
     tmm_modules[TMM_FLOWRECYCLER].ThreadInit = FlowRecyclerThreadInit;
     tmm_modules[TMM_FLOWRECYCLER].ThreadDeinit = FlowRecyclerThreadDeinit;
-//    tmm_modules[TMM_FLOWRECYCLER].RegisterTests = FlowRecyclerRegisterTests;
     tmm_modules[TMM_FLOWRECYCLER].Management = FlowRecycler;
     tmm_modules[TMM_FLOWRECYCLER].cap_flags = 0;
     tmm_modules[TMM_FLOWRECYCLER].flags = TM_FLAG_MANAGEMENT_TM;
@@ -1152,7 +1191,8 @@ static int FlowMgrTest01 (void)
 
     int32_t next_ts = 0;
     int state = SC_ATOMIC_GET(f.flow_state);
-    if (FlowManagerFlowTimeout(&f, state, &ts, &next_ts) != 1 && FlowManagerFlowTimedOut(&f, &ts) != 1) {
+    FlowTimeoutCounters counters = { 0, 0, 0, 0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    if (FlowManagerFlowTimeout(&f, state, &ts, &next_ts) != 1 && FlowManagerFlowTimedOut(&f, &ts, &counters) != 1) {
         FBLOCK_DESTROY(&fb);
         FLOW_DESTROY(&f);
         FlowQueueDestroy(&flow_spare_q);
@@ -1208,7 +1248,8 @@ static int FlowMgrTest02 (void)
 
     int32_t next_ts = 0;
     int state = SC_ATOMIC_GET(f.flow_state);
-    if (FlowManagerFlowTimeout(&f, state, &ts, &next_ts) != 1 && FlowManagerFlowTimedOut(&f, &ts) != 1) {
+    FlowTimeoutCounters counters = { 0, 0, 0, 0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    if (FlowManagerFlowTimeout(&f, state, &ts, &next_ts) != 1 && FlowManagerFlowTimedOut(&f, &ts, &counters) != 1) {
         FBLOCK_DESTROY(&fb);
         FLOW_DESTROY(&f);
         FlowQueueDestroy(&flow_spare_q);
@@ -1256,7 +1297,8 @@ static int FlowMgrTest03 (void)
 
     int next_ts = 0;
     int state = SC_ATOMIC_GET(f.flow_state);
-    if (FlowManagerFlowTimeout(&f, state, &ts, &next_ts) != 1 && FlowManagerFlowTimedOut(&f, &ts) != 1) {
+    FlowTimeoutCounters counters = { 0, 0, 0, 0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    if (FlowManagerFlowTimeout(&f, state, &ts, &next_ts) != 1 && FlowManagerFlowTimedOut(&f, &ts, &counters) != 1) {
         FBLOCK_DESTROY(&fb);
         FLOW_DESTROY(&f);
         FlowQueueDestroy(&flow_spare_q);
@@ -1313,7 +1355,8 @@ static int FlowMgrTest04 (void)
 
     int next_ts = 0;
     int state = SC_ATOMIC_GET(f.flow_state);
-    if (FlowManagerFlowTimeout(&f, state, &ts, &next_ts) != 1 && FlowManagerFlowTimedOut(&f, &ts) != 1) {
+    FlowTimeoutCounters counters = { 0, 0, 0, 0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    if (FlowManagerFlowTimeout(&f, state, &ts, &next_ts) != 1 && FlowManagerFlowTimedOut(&f, &ts, &counters) != 1) {
         FBLOCK_DESTROY(&fb);
         FLOW_DESTROY(&f);
         FlowQueueDestroy(&flow_spare_q);
@@ -1365,7 +1408,7 @@ static int FlowMgrTest05 (void)
     struct timeval ts;
     TimeGet(&ts);
     /* try to time out flows */
-    FlowTimeoutCounters counters = { 0, 0, 0, 0, 0,0,0,0,0,0,0,0,0,0,0};
+    FlowTimeoutCounters counters = { 0, 0, 0, 0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0};
     FlowTimeoutHash(&ts, 0 /* check all */, 0, flow_config.hash_size, &counters);
 
     if (flow_recycle_q.len > 0) {

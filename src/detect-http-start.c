@@ -213,7 +213,7 @@ static void PrefilterMpmHttpHeaderFree(void *ptr)
 
 static int PrefilterTxHttpRequestStartRegister(DetectEngineCtx *de_ctx,
         SigGroupHead *sgh, MpmCtx *mpm_ctx,
-        const DetectMpmAppLayerRegistery *mpm_reg, int list_id)
+        const DetectBufferMpmRegistery *mpm_reg, int list_id)
 {
     SCEnter();
 
@@ -222,10 +222,10 @@ static int PrefilterTxHttpRequestStartRegister(DetectEngineCtx *de_ctx,
         return -1;
     pectx->list_id = list_id;
     pectx->mpm_ctx = mpm_ctx;
-    pectx->transforms = &mpm_reg->v2.transforms;
+    pectx->transforms = &mpm_reg->transforms;
 
     int r = PrefilterAppendTxEngine(de_ctx, sgh, PrefilterTxHttpRequestStart,
-            mpm_reg->v2.alproto, HTP_REQUEST_HEADERS,
+            mpm_reg->app_v2.alproto, HTP_REQUEST_HEADERS,
             pectx, PrefilterMpmHttpHeaderFree, mpm_reg->pname);
     if (r != 0) {
         SCFree(pectx);
@@ -282,7 +282,7 @@ static void PrefilterTxHttpResponseStart(DetectEngineThreadCtx *det_ctx,
 
 static int PrefilterTxHttpResponseStartRegister(DetectEngineCtx *de_ctx,
         SigGroupHead *sgh, MpmCtx *mpm_ctx,
-        const DetectMpmAppLayerRegistery *mpm_reg, int list_id)
+        const DetectBufferMpmRegistery *mpm_reg, int list_id)
 {
     SCEnter();
 
@@ -291,10 +291,10 @@ static int PrefilterTxHttpResponseStartRegister(DetectEngineCtx *de_ctx,
         return -1;
     pectx->list_id = list_id;
     pectx->mpm_ctx = mpm_ctx;
-    pectx->transforms = &mpm_reg->v2.transforms;
+    pectx->transforms = &mpm_reg->transforms;
 
     int r = PrefilterAppendTxEngine(de_ctx, sgh, PrefilterTxHttpResponseStart,
-            mpm_reg->v2.alproto, HTP_RESPONSE_HEADERS,
+            mpm_reg->app_v2.alproto, HTP_RESPONSE_HEADERS,
             pectx, PrefilterMpmHttpHeaderFree, mpm_reg->pname);
     if (r != 0) {
         SCFree(pectx);
@@ -377,7 +377,7 @@ void DetectHttpStartRegister(void)
     sigmatch_table[DETECT_AL_HTTP_START].name = KEYWORD_NAME;
     sigmatch_table[DETECT_AL_HTTP_START].alias = KEYWORD_NAME_LEGACY;
     sigmatch_table[DETECT_AL_HTTP_START].desc = BUFFER_NAME " sticky buffer";
-    sigmatch_table[DETECT_AL_HTTP_START].url = DOC_URL DOC_VERSION "/rules/" KEYWORD_DOC;
+    sigmatch_table[DETECT_AL_HTTP_START].url = "/rules/" KEYWORD_DOC;
     sigmatch_table[DETECT_AL_HTTP_START].Setup = DetectHttpStartSetup;
     sigmatch_table[DETECT_AL_HTTP_START].flags |= SIGMATCH_NOOPT|SIGMATCH_INFO_STICKY_BUFFER;
 

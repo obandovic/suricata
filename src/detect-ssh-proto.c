@@ -50,8 +50,8 @@
 #define KEYWORD_NAME "ssh.proto"
 #define KEYWORD_NAME_LEGACY "ssh_proto"
 #define KEYWORD_DOC "ssh-keywords.html#ssh-proto"
-#define BUFFER_NAME "ssh_protocol"
-#define BUFFER_DESC "ssh protocol field"
+#define BUFFER_NAME "ssh.proto"
+#define BUFFER_DESC "ssh protocol version field"
 static int g_buffer_id = 0;
 
 static InspectionBuffer *GetSshData(DetectEngineThreadCtx *det_ctx,
@@ -106,7 +106,7 @@ void DetectSshProtocolRegister(void)
     sigmatch_table[DETECT_AL_SSH_PROTOCOL].name = KEYWORD_NAME;
     sigmatch_table[DETECT_AL_SSH_PROTOCOL].alias = KEYWORD_NAME_LEGACY;
     sigmatch_table[DETECT_AL_SSH_PROTOCOL].desc = BUFFER_NAME " sticky buffer";
-    sigmatch_table[DETECT_AL_SSH_PROTOCOL].url = DOC_URL DOC_VERSION "/rules/" KEYWORD_DOC;
+    sigmatch_table[DETECT_AL_SSH_PROTOCOL].url = "/rules/" KEYWORD_DOC;
     sigmatch_table[DETECT_AL_SSH_PROTOCOL].Setup = DetectSshProtocolSetup;
     sigmatch_table[DETECT_AL_SSH_PROTOCOL].flags |= SIGMATCH_INFO_STICKY_BUFFER | SIGMATCH_NOOPT;
 

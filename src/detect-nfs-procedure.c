@@ -1,4 +1,4 @@
-/* Copyright (C) 2017 Open Information Security Foundation
+/* Copyright (C) 2017-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -45,14 +45,12 @@
 
 #include "app-layer-nfs-tcp.h"
 #include "rust.h"
-#include "rust-nfs-nfs-gen.h"
 
 /**
  *   [nfs_procedure]:[<|>]<proc>[<><proc>];
  */
 #define PARSE_REGEX "^\\s*(<=|>=|<|>)?\\s*([0-9]+)\\s*(?:(<>)\\s*([0-9]+))?\\s*$"
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 enum DetectNfsProcedureMode {
     PROCEDURE_EQ = 1, /* equal */
@@ -71,7 +69,7 @@ typedef struct DetectNfsProcedureData_ {
 
 static DetectNfsProcedureData *DetectNfsProcedureParse (const char *);
 static int DetectNfsProcedureSetup (DetectEngineCtx *, Signature *s, const char *str);
-static void DetectNfsProcedureFree(void *);
+static void DetectNfsProcedureFree(DetectEngineCtx *, void *);
 static void DetectNfsProcedureRegisterTests(void);
 static int g_nfs_request_buffer_id = 0;
 
@@ -81,7 +79,7 @@ static int DetectEngineInspectNfsRequestGeneric(ThreadVars *tv,
         Flow *f, uint8_t flags, void *alstate,
         void *txv, uint64_t tx_id);
 
-static int DetectNfsProcedureMatch (ThreadVars *, DetectEngineThreadCtx *, Flow *,
+static int DetectNfsProcedureMatch (DetectEngineThreadCtx *, Flow *,
                                    uint8_t, void *, void *, const Signature *,
                                    const SigMatchCtx *);
 
@@ -92,7 +90,7 @@ void DetectNfsProcedureRegister (void)
 {
     sigmatch_table[DETECT_AL_NFS_PROCEDURE].name = "nfs_procedure";
     sigmatch_table[DETECT_AL_NFS_PROCEDURE].desc = "match NFS procedure";
-    sigmatch_table[DETECT_AL_NFS_PROCEDURE].url = DOC_URL DOC_VERSION "/rules/nfs-keywords.html#procedure";
+    sigmatch_table[DETECT_AL_NFS_PROCEDURE].url = "/rules/nfs-keywords.html#procedure";
     sigmatch_table[DETECT_AL_NFS_PROCEDURE].Match = NULL;
     sigmatch_table[DETECT_AL_NFS_PROCEDURE].AppLayerTxMatch = DetectNfsProcedureMatch;
     sigmatch_table[DETECT_AL_NFS_PROCEDURE].Setup = DetectNfsProcedureSetup;
@@ -100,7 +98,7 @@ void DetectNfsProcedureRegister (void)
     sigmatch_table[DETECT_AL_NFS_PROCEDURE].RegisterTests = DetectNfsProcedureRegisterTests;
 
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 
     DetectAppLayerInspectEngineRegister("nfs_request",
             ALPROTO_NFS, SIG_FLAG_TOSERVER, 0,
@@ -172,7 +170,7 @@ ProcedureMatch(const uint32_t procedure,
  * \retval 0 no match.
  * \retval 1 match.
  */
-static int DetectNfsProcedureMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectNfsProcedureMatch (DetectEngineThreadCtx *det_ctx,
                                    Flow *f, uint8_t flags, void *state,
                                    void *txv, const Signature *s,
                                    const SigMatchCtx *ctx)
@@ -207,7 +205,6 @@ static int DetectNfsProcedureMatch (ThreadVars *t, DetectEngineThreadCtx *det_ct
 static DetectNfsProcedureData *DetectNfsProcedureParse (const char *rawstr)
 {
     DetectNfsProcedureData *dd = NULL;
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
     char mode[2] = "";
@@ -215,8 +212,7 @@ static DetectNfsProcedureData *DetectNfsProcedureParse (const char *rawstr)
     char value2[20] = "";
     char range[3] = "";
 
-    ret = pcre_exec(parse_regex, parse_regex_study, rawstr, strlen(rawstr), 0,
-                    0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, rawstr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 3 || ret > 5) {
         SCLogError(SC_ERR_PCRE_MATCH, "Parse error %s", rawstr);
         goto error;
@@ -362,7 +358,7 @@ static int DetectNfsProcedureSetup (DetectEngineCtx *de_ctx, Signature *s,
     return 0;
 
 error:
-    DetectNfsProcedureFree(dd);
+    DetectNfsProcedureFree(de_ctx, dd);
     return -1;
 }
 
@@ -372,7 +368,7 @@ error:
  *
  * \param de_ptr Pointer to DetectNfsProcedureData.
  */
-void DetectNfsProcedureFree(void *ptr)
+void DetectNfsProcedureFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     SCFree(ptr);
 }
@@ -391,7 +387,7 @@ static int ValidityTestParse01 (void)
     dd = DetectNfsProcedureParse("1430000000");
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1430000000 && dd->mode == PROCEDURE_EQ);
-    DetectNfsProcedureFree(dd);
+    DetectNfsProcedureFree(NULL, dd);
     PASS;
 }
 
@@ -407,7 +403,7 @@ static int ValidityTestParse02 (void)
     dd = DetectNfsProcedureParse(">1430000000");
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1430000000 && dd->mode == PROCEDURE_GT);
-    DetectNfsProcedureFree(dd);
+    DetectNfsProcedureFree(NULL, dd);
     PASS;
 }
 
@@ -423,7 +419,7 @@ static int ValidityTestParse03 (void)
     dd = DetectNfsProcedureParse("<1430000000");
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1430000000 && dd->mode == PROCEDURE_LT);
-    DetectNfsProcedureFree(dd);
+    DetectNfsProcedureFree(NULL, dd);
     PASS;
 }
 
@@ -440,7 +436,7 @@ static int ValidityTestParse04 (void)
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1430000000 && dd->hi == 1470000000 &&
                 dd->mode == PROCEDURE_RA);
-    DetectNfsProcedureFree(dd);
+    DetectNfsProcedureFree(NULL, dd);
     PASS;
 }
 
@@ -555,7 +551,7 @@ static int ValidityTestParse12 (void)
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1430000000 && dd->hi == 1490000000 &&
                 dd->mode == PROCEDURE_RA);
-    DetectNfsProcedureFree(dd);
+    DetectNfsProcedureFree(NULL, dd);
     PASS;
 }
 
@@ -571,7 +567,7 @@ static int ValidityTestParse13 (void)
     dd = DetectNfsProcedureParse("> 1430000000 ");
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1430000000 && dd->mode == PROCEDURE_GT);
-    DetectNfsProcedureFree(dd);
+    DetectNfsProcedureFree(NULL, dd);
     PASS;
 }
 
@@ -587,7 +583,7 @@ static int ValidityTestParse14 (void)
     dd = DetectNfsProcedureParse("<   1490000000 ");
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1490000000 && dd->mode == PROCEDURE_LT);
-    DetectNfsProcedureFree(dd);
+    DetectNfsProcedureFree(NULL, dd);
     PASS;
 }
 
@@ -603,7 +599,7 @@ static int ValidityTestParse15 (void)
     dd = DetectNfsProcedureParse("   1490000000 ");
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1490000000 && dd->mode == PROCEDURE_EQ);
-    DetectNfsProcedureFree(dd);
+    DetectNfsProcedureFree(NULL, dd);
     PASS;
 }
 

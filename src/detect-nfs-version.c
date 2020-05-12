@@ -1,4 +1,4 @@
-/* Copyright (C) 2017-2019 Open Information Security Foundation
+/* Copyright (C) 2017-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -45,14 +45,12 @@
 
 #include "app-layer-nfs-tcp.h"
 #include "rust.h"
-#include "rust-nfs-nfs-gen.h"
 
 /**
  *   [nfs_procedure]:[<|>]<proc>[<><proc>];
  */
 #define PARSE_REGEX "^\\s*(<=|>=|<|>)?\\s*([0-9]+)\\s*(?:(<>)\\s*([0-9]+))?\\s*$"
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 enum DetectNfsVersionMode {
     PROCEDURE_EQ = 1, /* equal */
@@ -71,7 +69,7 @@ typedef struct DetectNfsVersionData_ {
 
 static DetectNfsVersionData *DetectNfsVersionParse (const char *);
 static int DetectNfsVersionSetup (DetectEngineCtx *, Signature *s, const char *str);
-static void DetectNfsVersionFree(void *);
+static void DetectNfsVersionFree(DetectEngineCtx *de_ctx, void *);
 static void DetectNfsVersionRegisterTests(void);
 static int g_nfs_request_buffer_id = 0;
 
@@ -81,7 +79,7 @@ static int DetectEngineInspectNfsRequestGeneric(ThreadVars *tv,
         Flow *f, uint8_t flags, void *alstate,
         void *txv, uint64_t tx_id);
 
-static int DetectNfsVersionMatch (ThreadVars *, DetectEngineThreadCtx *, Flow *,
+static int DetectNfsVersionMatch (DetectEngineThreadCtx *, Flow *,
                                    uint8_t, void *, void *, const Signature *,
                                    const SigMatchCtx *);
 
@@ -93,13 +91,13 @@ void DetectNfsVersionRegister (void)
     sigmatch_table[DETECT_AL_NFS_VERSION].name = "nfs.version";
     sigmatch_table[DETECT_AL_NFS_VERSION].alias = "nfs_version";
     sigmatch_table[DETECT_AL_NFS_VERSION].desc = "match NFS version";
-    sigmatch_table[DETECT_AL_NFS_VERSION].url = DOC_URL DOC_VERSION "/rules/nfs-keywords.html#version";
+    sigmatch_table[DETECT_AL_NFS_VERSION].url = "/rules/nfs-keywords.html#version";
     sigmatch_table[DETECT_AL_NFS_VERSION].AppLayerTxMatch = DetectNfsVersionMatch;
     sigmatch_table[DETECT_AL_NFS_VERSION].Setup = DetectNfsVersionSetup;
     sigmatch_table[DETECT_AL_NFS_VERSION].Free = DetectNfsVersionFree;
     sigmatch_table[DETECT_AL_NFS_VERSION].RegisterTests = DetectNfsVersionRegisterTests;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 
     DetectAppLayerInspectEngineRegister("nfs_request",
             ALPROTO_NFS, SIG_FLAG_TOSERVER, 0,
@@ -169,7 +167,7 @@ VersionMatch(const uint32_t version,
  * \retval 0 no match.
  * \retval 1 match.
  */
-static int DetectNfsVersionMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectNfsVersionMatch (DetectEngineThreadCtx *det_ctx,
                                    Flow *f, uint8_t flags, void *state,
                                    void *txv, const Signature *s,
                                    const SigMatchCtx *ctx)
@@ -198,7 +196,6 @@ static int DetectNfsVersionMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
 static DetectNfsVersionData *DetectNfsVersionParse (const char *rawstr)
 {
     DetectNfsVersionData *dd = NULL;
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
     char mode[2] = "";
@@ -206,8 +203,7 @@ static DetectNfsVersionData *DetectNfsVersionParse (const char *rawstr)
     char value2[20] = "";
     char range[3] = "";
 
-    ret = pcre_exec(parse_regex, parse_regex_study, rawstr, strlen(rawstr), 0,
-                    0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, rawstr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 3 || ret > 5) {
         SCLogError(SC_ERR_PCRE_MATCH, "Parse error %s", rawstr);
         goto error;
@@ -350,7 +346,7 @@ static int DetectNfsVersionSetup (DetectEngineCtx *de_ctx, Signature *s,
     return 0;
 
 error:
-    DetectNfsVersionFree(dd);
+    DetectNfsVersionFree(de_ctx, dd);
     return -1;
 }
 
@@ -360,7 +356,7 @@ error:
  *
  * \param de_ptr Pointer to DetectNfsVersionData.
  */
-void DetectNfsVersionFree(void *ptr)
+void DetectNfsVersionFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     SCFree(ptr);
 }
@@ -379,7 +375,7 @@ static int ValidityTestParse01 (void)
     dd = DetectNfsVersionParse("1430000000");
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1430000000 && dd->mode == PROCEDURE_EQ);
-    DetectNfsVersionFree(dd);
+    DetectNfsVersionFree(NULL, dd);
     PASS;
 }
 
@@ -395,7 +391,7 @@ static int ValidityTestParse02 (void)
     dd = DetectNfsVersionParse(">1430000000");
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1430000000 && dd->mode == PROCEDURE_GT);
-    DetectNfsVersionFree(dd);
+    DetectNfsVersionFree(NULL, dd);
     PASS;
 }
 
@@ -411,7 +407,7 @@ static int ValidityTestParse03 (void)
     dd = DetectNfsVersionParse("<1430000000");
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1430000000 && dd->mode == PROCEDURE_LT);
-    DetectNfsVersionFree(dd);
+    DetectNfsVersionFree(NULL, dd);
     PASS;
 }
 
@@ -428,7 +424,7 @@ static int ValidityTestParse04 (void)
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1430000000 && dd->hi == 1470000000 &&
                 dd->mode == PROCEDURE_RA);
-    DetectNfsVersionFree(dd);
+    DetectNfsVersionFree(NULL, dd);
     PASS;
 }
 
@@ -543,7 +539,7 @@ static int ValidityTestParse12 (void)
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1430000000 && dd->hi == 1490000000 &&
                 dd->mode == PROCEDURE_RA);
-    DetectNfsVersionFree(dd);
+    DetectNfsVersionFree(NULL, dd);
     PASS;
 }
 
@@ -559,7 +555,7 @@ static int ValidityTestParse13 (void)
     dd = DetectNfsVersionParse("> 1430000000 ");
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1430000000 && dd->mode == PROCEDURE_GT);
-    DetectNfsVersionFree(dd);
+    DetectNfsVersionFree(NULL, dd);
     PASS;
 }
 
@@ -575,7 +571,7 @@ static int ValidityTestParse14 (void)
     dd = DetectNfsVersionParse("<   1490000000 ");
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1490000000 && dd->mode == PROCEDURE_LT);
-    DetectNfsVersionFree(dd);
+    DetectNfsVersionFree(NULL, dd);
     PASS;
 }
 
@@ -591,7 +587,7 @@ static int ValidityTestParse15 (void)
     dd = DetectNfsVersionParse("   1490000000 ");
     FAIL_IF_NULL(dd);
     FAIL_IF_NOT(dd->lo == 1490000000 && dd->mode == PROCEDURE_EQ);
-    DetectNfsVersionFree(dd);
+    DetectNfsVersionFree(NULL, dd);
     PASS;
 }
 

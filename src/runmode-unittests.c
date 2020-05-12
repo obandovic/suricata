@@ -146,8 +146,10 @@ static void RegisterUnittests(void)
     IPPairBitRegisterTests();
     StatsRegisterTests();
     DecodeEthernetRegisterTests();
+    DecodeCHDLCRegisterTests();
     DecodePPPRegisterTests();
     DecodeVLANRegisterTests();
+    DecodeVXLANRegisterTests();
     DecodeRawRegisterTests();
     DecodePPPOERegisterTests();
     DecodeICMPV4RegisterTests();
@@ -243,9 +245,6 @@ void RunUnittests(int list_unittests, const char *regex_arg)
 
     CIDRInit();
 
-#ifdef DBG_MEM_ALLOC
-    SCLogInfo("Memory used at startup: %"PRIdMAX, (intmax_t)global_mem);
-#endif
     SCProtoNameInit();
 
     TagInitCtx();
@@ -298,9 +297,6 @@ void RunUnittests(int list_unittests, const char *regex_arg)
 
 #ifdef HAVE_LUAJIT
     LuajitFreeStatesPool();
-#endif
-#ifdef DBG_MEM_ALLOC
-    SCLogInfo("Total memory used (without SCFree()): %"PRIdMAX, (intmax_t)global_mem);
 #endif
 
     exit(EXIT_SUCCESS);

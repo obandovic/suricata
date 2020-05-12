@@ -62,13 +62,14 @@ extern int run_mode;
 static int DetectReplaceSetup(DetectEngineCtx *, Signature *, const char *);
 void DetectReplaceRegisterTests(void);
 
-static int DetectReplacePostMatch(ThreadVars *tv,
-        DetectEngineThreadCtx *det_ctx,
+static int DetectReplacePostMatch(DetectEngineThreadCtx *det_ctx,
         Packet *p, const Signature *s, const SigMatchCtx *ctx);
 
 void DetectReplaceRegister (void)
 {
     sigmatch_table[DETECT_REPLACE].name = "replace";
+    sigmatch_table[DETECT_REPLACE].desc = "only to be used in IPS-mode. Change the following content into another";
+    sigmatch_table[DETECT_REPLACE].url = "/rules/payload-keywords.html#replace";
     sigmatch_table[DETECT_REPLACE].Match = DetectReplacePostMatch;
     sigmatch_table[DETECT_REPLACE].Setup = DetectReplaceSetup;
     sigmatch_table[DETECT_REPLACE].Free  = NULL;
@@ -76,8 +77,7 @@ void DetectReplaceRegister (void)
     sigmatch_table[DETECT_REPLACE].flags = (SIGMATCH_QUOTES_MANDATORY|SIGMATCH_HANDLE_NEGATION);
 }
 
-static int DetectReplacePostMatch(ThreadVars *tv,
-        DetectEngineThreadCtx *det_ctx,
+static int DetectReplacePostMatch(DetectEngineThreadCtx *det_ctx,
         Packet *p, const Signature *s, const SigMatchCtx *ctx)
 {
     if (det_ctx->replist) {
@@ -211,7 +211,7 @@ void DetectReplaceExecuteInternal(Packet *p, DetectReplaceList *replist)
     SCLogDebug("replace: Executing match");
     while (replist) {
         memcpy(replist->found, replist->cd->replace, replist->cd->replace_len);
-        SCLogDebug("replace: injecting '%s'", replist->cd->replace);
+        SCLogDebug("replace: replaced data");
         p->flags |= PKT_STREAM_MODIFIED;
         ReCalculateChecksum(p);
         tlist = replist;
@@ -270,7 +270,7 @@ int DetectReplaceLongPatternMatchTest(uint8_t *raw_eth_pkt, uint16_t pktsize,
     dtv.app_tctx = AppLayerGetCtxThread(&th_v);
 
     FlowInitConfig(FLOW_QUIET);
-    DecodeEthernet(&th_v, &dtv, p, GET_PKT_DATA(p), pktsize, NULL);
+    DecodeEthernet(&th_v, &dtv, p, GET_PKT_DATA(p), pktsize);
 
     DetectEngineCtx *de_ctx = DetectEngineCtxInit();
     if (de_ctx == NULL) {

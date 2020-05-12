@@ -45,6 +45,80 @@
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
 
+#if defined(UNITTESTS) || defined(FUZZ)
+Flow *TestHelperBuildFlow(int family, const char *src, const char *dst, Port sp, Port dp)
+{
+    struct in_addr in;
+
+    Flow *f = SCMalloc(sizeof(Flow));
+    if (unlikely(f == NULL)) {
+        printf("FlowAlloc failed\n");
+        ;
+        return NULL;
+    }
+    memset(f, 0x00, sizeof(Flow));
+
+    FLOW_INITIALIZE(f);
+
+    if (family == AF_INET) {
+        f->flags |= FLOW_IPV4;
+    } else if (family == AF_INET6) {
+        f->flags |= FLOW_IPV6;
+    }
+
+    if (src != NULL) {
+        if (family == AF_INET) {
+            if (inet_pton(AF_INET, src, &in) != 1) {
+                printf("invalid address %s\n", src);
+                SCFree(f);
+                return NULL;
+            }
+            f->src.addr_data32[0] = in.s_addr;
+        } else {
+            BUG_ON(1);
+        }
+    }
+    if (dst != NULL) {
+        if (family == AF_INET) {
+            if (inet_pton(AF_INET, dst, &in) != 1) {
+                printf("invalid address %s\n", dst);
+                SCFree(f);
+                return NULL;
+            }
+            f->dst.addr_data32[0] = in.s_addr;
+        } else {
+            BUG_ON(1);
+        }
+    }
+
+    f->sp = sp;
+    f->dp = dp;
+
+    return f;
+}
+/** \brief writes the contents of a buffer into a file */
+int TestHelperBufferToFile(const char *name, const uint8_t *data, size_t size)
+{
+    if (remove(name) != 0) {
+        if (errno != ENOENT) {
+            printf("failed remove, errno=%d\n", errno);
+            return -1;
+        }
+    }
+    FILE *fd = fopen(name, "wb");
+    if (fd == NULL) {
+        printf("failed open, errno=%d\n", errno);
+        return -2;
+    }
+    if (fwrite (data, 1, size, fd) != size) {
+        fclose(fd);
+        return -3;
+    }
+    fclose(fd);
+    return 0;
+}
+
+#endif
 #ifdef UNITTESTS
 
 /**
@@ -302,7 +376,7 @@ Packet **UTHBuildPacketArrayFromEth(uint8_t *raw_eth[], int *pktsize, int numpkt
             SCFree(p);
             return NULL;
         }
-        DecodeEthernet(&th_v, &dtv, p[i], raw_eth[i], pktsize[i], NULL);
+        DecodeEthernet(&th_v, &dtv, p[i], raw_eth[i], pktsize[i]);
     }
     return p;
 }
@@ -326,7 +400,7 @@ Packet *UTHBuildPacketFromEth(uint8_t *raw_eth, uint16_t pktsize)
     memset(&dtv, 0, sizeof(DecodeThreadVars));
     memset(&th_v, 0, sizeof(th_v));
 
-    DecodeEthernet(&th_v, &dtv, p, raw_eth, pktsize, NULL);
+    DecodeEthernet(&th_v, &dtv, p, raw_eth, pktsize);
     return p;
 }
 
@@ -445,53 +519,7 @@ void UTHAssignFlow(Packet *p, Flow *f)
 
 Flow *UTHBuildFlow(int family, const char *src, const char *dst, Port sp, Port dp)
 {
-    struct in_addr in;
-
-    Flow *f = SCMalloc(sizeof(Flow));
-    if (unlikely(f == NULL)) {
-        printf("FlowAlloc failed\n");
-        ;
-        return NULL;
-    }
-    memset(f, 0x00, sizeof(Flow));
-
-    FLOW_INITIALIZE(f);
-
-    if (family == AF_INET) {
-        f->flags |= FLOW_IPV4;
-    } else if (family == AF_INET6) {
-        f->flags |= FLOW_IPV6;
-    }
-
-    if (src != NULL) {
-        if (family == AF_INET) {
-            if (inet_pton(AF_INET, src, &in) != 1) {
-                printf("invalid address %s\n", src);
-                SCFree(f);
-                return NULL;
-            }
-            f->src.addr_data32[0] = in.s_addr;
-        } else {
-            BUG_ON(1);
-        }
-    }
-    if (dst != NULL) {
-        if (family == AF_INET) {
-            if (inet_pton(AF_INET, dst, &in) != 1) {
-                printf("invalid address %s\n", dst);
-                SCFree(f);
-                return NULL;
-            }
-            f->dst.addr_data32[0] = in.s_addr;
-        } else {
-            BUG_ON(1);
-        }
-    }
-
-    f->sp = sp;
-    f->dp = dp;
-
-    return f;
+    return TestHelperBuildFlow(family, src, dst, sp, dp);
 }
 
 void UTHFreeFlow(Flow *flow)
@@ -942,7 +970,6 @@ int UTHParseSignature(const char *str, bool expect)
     PASS;
 }
 
-
 /*
  * unittests for the unittest helpers
  */
@@ -994,6 +1021,18 @@ static int CheckUTHTestPacket(Packet *p, uint8_t ipproto)
     }
     return 1;
 }
+
+#ifdef HAVE_MEMMEM
+#include <string.h>
+void * UTHmemsearch(const void *big, size_t big_len, const void *little, size_t little_len) {
+    return memmem(big, big_len, little, little_len);
+}
+#else
+#include "util-spm-bs.h"
+void * UTHmemsearch(const void *big, size_t big_len, const void *little, size_t little_len) {
+    return BasicSearch(big, big_len, little, little_len);
+}
+#endif //HAVE_MEMMEM
 
 /**
  * \brief UTHBuildPacketRealTest01 wrapper to check packets for unittests

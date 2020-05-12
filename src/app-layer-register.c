@@ -54,6 +54,10 @@ AppProto AppLayerRegisterProtocolDetection(const struct AppLayerParser *p, int e
 
     AppLayerProtoDetectRegisterProtocol(alproto, p->name);
 
+    if (p->ProbeTS == NULL || p->ProbeTC == NULL) {
+        return alproto;
+    }
+
     if (RunmodeIsUnittests()) {
 
         SCLogDebug("Unittest mode, registering default configuration.");
@@ -145,6 +149,10 @@ int AppLayerRegisterParser(const struct AppLayerParser *p, AppProto alproto)
         AppLayerParserRegisterGetEventInfo(p->ip_proto, alproto,
                 p->StateGetEventInfo);
     }
+    if (p->StateGetEventInfoById) {
+        AppLayerParserRegisterGetEventInfoById(p->ip_proto, alproto,
+                p->StateGetEventInfoById);
+    }
     if (p->StateGetEvents) {
         AppLayerParserRegisterGetEventsFunc(p->ip_proto, alproto,
                 p->StateGetEvents);
@@ -165,6 +173,11 @@ int AppLayerRegisterParser(const struct AppLayerParser *p, AppProto alproto)
     if (p->GetTxIterator) {
         AppLayerParserRegisterGetTxIterator(p->ip_proto, alproto,
                 p->GetTxIterator);
+    }
+
+    if (p->SetTxDetectFlags && p->GetTxDetectFlags) {
+        AppLayerParserRegisterDetectFlagsFuncs(p->ip_proto, alproto,
+                p->GetTxDetectFlags, p->SetTxDetectFlags);
     }
 
     return 0;

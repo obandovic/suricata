@@ -15,9 +15,9 @@
  * 02110-1301, USA.
  */
 
-use core::*;
-use log::*;
-use smb::smb::*;
+use crate::core::*;
+use crate::log::*;
+use crate::smb::smb::*;
 
 #[repr(u32)]
 pub enum SMBEvent {
@@ -28,6 +28,21 @@ pub enum SMBEvent {
     MalformedNtlmsspResponse = 4,
     DuplicateNegotiate = 5,
     NegotiateMalformedDialects = 6,
+}
+
+impl SMBEvent {
+    pub fn from_i32(value: i32) -> Option<SMBEvent> {
+        match value {
+            0 => Some(SMBEvent::InternalError),
+            1 => Some(SMBEvent::MalformedData),
+            2 => Some(SMBEvent::RecordOverflow),
+            3 => Some(SMBEvent::MalformedNtlmsspRequest),
+            4 => Some(SMBEvent::MalformedNtlmsspResponse),
+            5 => Some(SMBEvent::DuplicateNegotiate),
+            6 => Some(SMBEvent::NegotiateMalformedDialects),
+            _ => None,
+        }
+    }
 }
 
 pub fn smb_str_to_event(instr: &str) -> i32 {

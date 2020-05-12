@@ -39,16 +39,12 @@
 #include "util-debug.h"
 
 int DecodeEthernet(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
-                   uint8_t *pkt, uint32_t len, PacketQueue *pq)
+                   const uint8_t *pkt, uint32_t len)
 {
     StatsIncr(tv, dtv->counter_eth);
 
     if (unlikely(len < ETHERNET_HEADER_LEN)) {
         ENGINE_SET_INVALID_EVENT(p, ETHERNET_PKT_TOO_SMALL);
-        return TM_ECODE_FAILED;
-    }
-
-    if (unlikely(len > ETHERNET_HEADER_LEN + USHRT_MAX)) {
         return TM_ECODE_FAILED;
     }
 
@@ -58,49 +54,8 @@ int DecodeEthernet(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
 
     SCLogDebug("p %p pkt %p ether type %04x", p, pkt, SCNtohs(p->ethh->eth_type));
 
-    switch (SCNtohs(p->ethh->eth_type)) {
-        case ETHERNET_TYPE_IP:
-            //printf("DecodeEthernet ip4\n");
-            DecodeIPV4(tv, dtv, p, pkt + ETHERNET_HEADER_LEN,
-                       len - ETHERNET_HEADER_LEN, pq);
-            break;
-        case ETHERNET_TYPE_IPV6:
-            //printf("DecodeEthernet ip6\n");
-            DecodeIPV6(tv, dtv, p, pkt + ETHERNET_HEADER_LEN,
-                       len - ETHERNET_HEADER_LEN, pq);
-            break;
-        case ETHERNET_TYPE_PPPOE_SESS:
-            //printf("DecodeEthernet PPPOE Session\n");
-            DecodePPPOESession(tv, dtv, p, pkt + ETHERNET_HEADER_LEN,
-                               len - ETHERNET_HEADER_LEN, pq);
-            break;
-        case ETHERNET_TYPE_PPPOE_DISC:
-            //printf("DecodeEthernet PPPOE Discovery\n");
-            DecodePPPOEDiscovery(tv, dtv, p, pkt + ETHERNET_HEADER_LEN,
-                                 len - ETHERNET_HEADER_LEN, pq);
-            break;
-        case ETHERNET_TYPE_VLAN:
-        case ETHERNET_TYPE_8021QINQ:
-            DecodeVLAN(tv, dtv, p, pkt + ETHERNET_HEADER_LEN,
-                                 len - ETHERNET_HEADER_LEN, pq);
-            break;
-        case ETHERNET_TYPE_MPLS_UNICAST:
-        case ETHERNET_TYPE_MPLS_MULTICAST:
-            DecodeMPLS(tv, dtv, p, pkt + ETHERNET_HEADER_LEN,
-                       len - ETHERNET_HEADER_LEN, pq);
-            break;
-        case ETHERNET_TYPE_DCE:
-            if (unlikely(len < ETHERNET_DCE_HEADER_LEN)) {
-                ENGINE_SET_INVALID_EVENT(p, DCE_PKT_TOO_SMALL);
-            } else {
-                DecodeEthernet(tv, dtv, p, pkt + ETHERNET_DCE_HEADER_LEN,
-                    len - ETHERNET_DCE_HEADER_LEN, pq);
-            }
-            break;
-        default:
-            SCLogDebug("p %p pkt %p ether type %04x not supported", p,
-                       pkt, SCNtohs(p->ethh->eth_type));
-    }
+    DecodeNetworkLayer(tv, dtv, SCNtohs(p->ethh->eth_type), p,
+            pkt + ETHERNET_HEADER_LEN, len - ETHERNET_HEADER_LEN);
 
     return TM_ECODE_OK;
 }
@@ -141,7 +96,7 @@ static int DecodeEthernetTest01 (void)
     memset(&tv,  0, sizeof(ThreadVars));
     memset(p, 0, SIZE_OF_PACKET);
 
-    DecodeEthernet(&tv, &dtv, p, raw_eth, sizeof(raw_eth), NULL);
+    DecodeEthernet(&tv, &dtv, p, raw_eth, sizeof(raw_eth));
 
     SCFree(p);
     return 1;
@@ -166,7 +121,7 @@ static int DecodeEthernetTestDceTooSmall(void)
     memset(&tv,  0, sizeof(ThreadVars));
     memset(p, 0, SIZE_OF_PACKET);
 
-    DecodeEthernet(&tv, &dtv, p, raw_eth, sizeof(raw_eth), NULL);
+    DecodeEthernet(&tv, &dtv, p, raw_eth, sizeof(raw_eth));
 
     FAIL_IF_NOT(ENGINE_ISSET_EVENT(p, DCE_PKT_TOO_SMALL));
 
@@ -202,9 +157,9 @@ static int DecodeEthernetTestDceNextTooSmall(void)
     memset(&tv,  0, sizeof(ThreadVars));
     memset(p, 0, SIZE_OF_PACKET);
 
-    DecodeEthernet(&tv, &dtv, p, raw_eth, sizeof(raw_eth), NULL);
+    DecodeEthernet(&tv, &dtv, p, raw_eth, sizeof(raw_eth));
 
-    FAIL_IF_NOT(ENGINE_ISSET_EVENT(p, ETHERNET_PKT_TOO_SMALL));
+    FAIL_IF_NOT(ENGINE_ISSET_EVENT(p, DCE_PKT_TOO_SMALL));
 
     SCFree(p);
     PASS;

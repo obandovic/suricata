@@ -54,7 +54,7 @@ void DetectDistanceRegister(void)
 {
     sigmatch_table[DETECT_DISTANCE].name = "distance";
     sigmatch_table[DETECT_DISTANCE].desc = "indicates a relation between this content keyword and the content preceding it";
-    sigmatch_table[DETECT_DISTANCE].url = DOC_URL DOC_VERSION "/rules/payload-keywords.html#distance";
+    sigmatch_table[DETECT_DISTANCE].url = "/rules/payload-keywords.html#distance";
     sigmatch_table[DETECT_DISTANCE].Match = NULL;
     sigmatch_table[DETECT_DISTANCE].Setup = DetectDistanceSetup;
     sigmatch_table[DETECT_DISTANCE].Free  = NULL;
@@ -113,7 +113,7 @@ static int DetectDistanceSetup (DetectEngineCtx *de_ctx, Signature *s,
         cd->distance = ((DetectByteExtractData *)bed_sm->ctx)->local_id;
         cd->flags |= DETECT_CONTENT_DISTANCE_BE;
     } else {
-        if (ByteExtractStringInt32(&cd->distance, 0, 0, str) != (int)strlen(str)) {
+        if (StringParseInt32(&cd->distance, 0, 0, str) < 0) {
             SCLogError(SC_ERR_INVALID_SIGNATURE,
                       "invalid value for distance: %s", str);
             goto end;

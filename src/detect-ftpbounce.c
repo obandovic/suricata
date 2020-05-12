@@ -47,7 +47,7 @@
 #include "stream-tcp.h"
 #include "util-byte.h"
 
-static int DetectFtpbounceALMatch(ThreadVars *, DetectEngineThreadCtx *,
+static int DetectFtpbounceALMatch(DetectEngineThreadCtx *,
         Flow *, uint8_t, void *, void *,
         const Signature *, const SigMatchCtx *);
 
@@ -68,10 +68,11 @@ static int InspectFtpRequest(ThreadVars *tv,
 void DetectFtpbounceRegister(void)
 {
     sigmatch_table[DETECT_FTPBOUNCE].name = "ftpbounce";
+    sigmatch_table[DETECT_FTPBOUNCE].desc = "detect FTP bounce attacks";
     sigmatch_table[DETECT_FTPBOUNCE].Setup = DetectFtpbounceSetup;
     sigmatch_table[DETECT_FTPBOUNCE].AppLayerTxMatch = DetectFtpbounceALMatch;
     sigmatch_table[DETECT_FTPBOUNCE].RegisterTests = DetectFtpbounceRegisterTests;
-    sigmatch_table[DETECT_FTPBOUNCE].url = DOC_URL DOC_VERSION "/rules/ftp-keywords.html#ftpbounce";
+    sigmatch_table[DETECT_FTPBOUNCE].url = "/rules/ftp-keywords.html#ftpbounce";
     sigmatch_table[DETECT_FTPBOUNCE].flags = SIGMATCH_NOOPT;
 
     g_ftp_request_list_id = DetectBufferTypeRegister("ftp_request");
@@ -186,7 +187,7 @@ static int DetectFtpbounceMatchArgs(uint8_t *payload, uint16_t payload_len,
  * \retval 0 no match
  * \retval 1 match
  */
-static int DetectFtpbounceALMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectFtpbounceALMatch(DetectEngineThreadCtx *det_ctx,
         Flow *f, uint8_t flags,
         void *state, void *txv,
         const Signature *s, const SigMatchCtx *m)
@@ -268,7 +269,7 @@ static int DetectFtpbounceTestSetup01(void)
     FAIL_IF(s->sm_lists[g_ftp_request_list_id] == NULL);
     FAIL_IF_NOT(s->sm_lists[g_ftp_request_list_id]->type & DETECT_FTPBOUNCE);
 
-    SigFree(s);
+    SigFree(de_ctx, s);
     PASS;
 }
 

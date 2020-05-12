@@ -17,14 +17,13 @@
 
 // written by Clément Galland <clement.galland@epita.fr>
 
-extern crate libc;
 extern crate nom;
 
 use std::str;
 use std;
 use std::mem::transmute;
 
-use applayer::LoggerFlags;
+use crate::applayer::LoggerFlags;
 
 #[derive(Debug)]
 pub struct TFTPTransaction {
@@ -74,14 +73,14 @@ impl TFTPTransaction {
 }
 
 #[no_mangle]
-pub extern "C" fn rs_tftp_state_alloc() -> *mut libc::c_void {
+pub extern "C" fn rs_tftp_state_alloc() -> *mut std::os::raw::c_void {
     let state = TFTPState { transactions : Vec::new(), tx_id: 0, };
     let boxed = Box::new(state);
     return unsafe{transmute(boxed)};
 }
 
 #[no_mangle]
-pub extern "C" fn rs_tftp_state_free(state: *mut libc::c_void) {
+pub extern "C" fn rs_tftp_state_free(state: *mut std::os::raw::c_void) {
     let _state : Box<TFTPState> = unsafe{transmute(state)};
 }
 
@@ -93,7 +92,7 @@ pub extern "C" fn rs_tftp_state_tx_free(state: &mut TFTPState,
 
 #[no_mangle]
 pub extern "C" fn rs_tftp_get_tx(state: &mut TFTPState,
-                                    tx_id: u64) -> *mut libc::c_void {
+                                    tx_id: u64) -> *mut std::os::raw::c_void {
     match state.get_tx_by_id(tx_id) {
         Some(tx) => unsafe{std::mem::transmute(tx)},
         None     => std::ptr::null_mut(),
@@ -149,7 +148,7 @@ pub extern "C" fn rs_tftp_request(state: &mut TFTPState,
             state.tx_id += 1;
             rqst.id = state.tx_id;
             state.transactions.push(rqst);
-            1
+            0
         },
         _ => 0
     }

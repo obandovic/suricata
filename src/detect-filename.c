@@ -54,18 +54,18 @@
 #include "detect-filename.h"
 #include "app-layer-parser.h"
 
-static int DetectFilenameMatch (ThreadVars *, DetectEngineThreadCtx *, Flow *,
+static int DetectFilenameMatch (DetectEngineThreadCtx *, Flow *,
         uint8_t, File *, const Signature *, const SigMatchCtx *);
 static int DetectFilenameSetup (DetectEngineCtx *, Signature *, const char *);
 static int DetectFilenameSetupSticky(DetectEngineCtx *de_ctx, Signature *s, const char *str);
 static void DetectFilenameRegisterTests(void);
-static void DetectFilenameFree(void *);
+static void DetectFilenameFree(DetectEngineCtx *, void *);
 static int g_file_match_list_id = 0;
 static int g_file_name_buffer_id = 0;
 
 static int PrefilterMpmFilenameRegister(DetectEngineCtx *de_ctx,
         SigGroupHead *sgh, MpmCtx *mpm_ctx,
-        const DetectMpmAppLayerRegistery *mpm_reg, int list_id);
+        const DetectBufferMpmRegistery *mpm_reg, int list_id);
 static int DetectEngineInspectFilename(
         DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
         const DetectEngineAppInspectionEngine *engine,
@@ -79,7 +79,7 @@ void DetectFilenameRegister(void)
 {
     sigmatch_table[DETECT_FILENAME].name = "filename";
     sigmatch_table[DETECT_FILENAME].desc = "match on the file name";
-    sigmatch_table[DETECT_FILENAME].url = DOC_URL DOC_VERSION "/rules/file-keywords.html#filename";
+    sigmatch_table[DETECT_FILENAME].url = "/rules/file-keywords.html#filename";
     sigmatch_table[DETECT_FILENAME].FileMatch = DetectFilenameMatch;
     sigmatch_table[DETECT_FILENAME].Setup = DetectFilenameSetup;
     sigmatch_table[DETECT_FILENAME].Free  = DetectFilenameFree;
@@ -89,7 +89,7 @@ void DetectFilenameRegister(void)
 
     sigmatch_table[DETECT_FILE_NAME].name = "file.name";
     sigmatch_table[DETECT_FILE_NAME].desc = "sticky buffer to match on the file name";
-    sigmatch_table[DETECT_FILE_NAME].url = DOC_URL DOC_VERSION "/rules/file-keywords.html#filename";
+    sigmatch_table[DETECT_FILE_NAME].url = "/rules/file-keywords.html#filename";
     sigmatch_table[DETECT_FILE_NAME].Setup = DetectFilenameSetupSticky;
     sigmatch_table[DETECT_FILE_NAME].flags = SIGMATCH_NOOPT|SIGMATCH_INFO_STICKY_BUFFER;
 
@@ -173,7 +173,7 @@ void DetectFilenameRegister(void)
  * \retval 0 no match
  * \retval 1 match
  */
-static int DetectFilenameMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectFilenameMatch (DetectEngineThreadCtx *det_ctx,
         Flow *f, uint8_t flags, File *file, const Signature *s, const SigMatchCtx *m)
 {
     SCEnter();
@@ -215,12 +215,13 @@ static int DetectFilenameMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
 /**
  * \brief Parse the filename keyword
  *
+ * \param de_ctx Pointer to the detection engine context
  * \param idstr Pointer to the user provided option
  *
  * \retval filename pointer to DetectFilenameData on success
  * \retval NULL on failure
  */
-static DetectFilenameData *DetectFilenameParse (const char *str, bool negate)
+static DetectFilenameData *DetectFilenameParse (DetectEngineCtx *de_ctx, const char *str, bool negate)
 {
     DetectFilenameData *filename = NULL;
 
@@ -265,7 +266,7 @@ static DetectFilenameData *DetectFilenameParse (const char *str, bool negate)
 
 error:
     if (filename != NULL)
-        DetectFilenameFree(filename);
+        DetectFilenameFree(de_ctx, filename);
     return NULL;
 }
 
@@ -285,7 +286,7 @@ static int DetectFilenameSetup (DetectEngineCtx *de_ctx, Signature *s, const cha
     DetectFilenameData *filename = NULL;
     SigMatch *sm = NULL;
 
-    filename = DetectFilenameParse(str, s->init_data->negated);
+    filename = DetectFilenameParse(de_ctx, str, s->init_data->negated);
     if (filename == NULL)
         goto error;
 
@@ -305,7 +306,7 @@ static int DetectFilenameSetup (DetectEngineCtx *de_ctx, Signature *s, const cha
 
 error:
     if (filename != NULL)
-        DetectFilenameFree(filename);
+        DetectFilenameFree(de_ctx, filename);
     if (sm != NULL)
         SCFree(sm);
     return -1;
@@ -316,7 +317,7 @@ error:
  *
  * \param filename pointer to DetectFilenameData
  */
-static void DetectFilenameFree(void *ptr)
+static void DetectFilenameFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     if (ptr != NULL) {
         DetectFilenameData *filename = (DetectFilenameData *)ptr;
@@ -381,8 +382,7 @@ static int DetectEngineInspectFilename(
         transforms = engine->v2.transforms;
     }
 
-    FileContainer *ffc = AppLayerParserGetFiles(f->proto, f->alproto,
-                                                f->alstate, flags);
+    FileContainer *ffc = AppLayerParserGetFiles(f, flags);
     if (ffc == NULL) {
         return DETECT_ENGINE_INSPECT_SIG_NO_MATCH;
     }
@@ -442,8 +442,7 @@ static void PrefilterTxFilename(DetectEngineThreadCtx *det_ctx,
     const MpmCtx *mpm_ctx = ctx->mpm_ctx;
     const int list_id = ctx->list_id;
 
-    FileContainer *ffc = AppLayerParserGetFiles(f->proto, f->alproto,
-                                                f->alstate, flags);
+    FileContainer *ffc = AppLayerParserGetFiles(f, flags);
     int local_file_id = 0;
     if (ffc != NULL) {
         File *file = ffc->head;
@@ -472,17 +471,17 @@ static void PrefilterMpmFilenameFree(void *ptr)
 
 static int PrefilterMpmFilenameRegister(DetectEngineCtx *de_ctx,
         SigGroupHead *sgh, MpmCtx *mpm_ctx,
-        const DetectMpmAppLayerRegistery *mpm_reg, int list_id)
+        const DetectBufferMpmRegistery *mpm_reg, int list_id)
 {
     PrefilterMpmFilename *pectx = SCCalloc(1, sizeof(*pectx));
     if (pectx == NULL)
         return -1;
     pectx->list_id = list_id;
     pectx->mpm_ctx = mpm_ctx;
-    pectx->transforms = &mpm_reg->v2.transforms;
+    pectx->transforms = &mpm_reg->transforms;
 
     return PrefilterAppendTxEngine(de_ctx, sgh, PrefilterTxFilename,
-            mpm_reg->v2.alproto, mpm_reg->v2.tx_min_progress,
+            mpm_reg->app_v2.alproto, mpm_reg->app_v2.tx_min_progress,
             pectx, PrefilterMpmFilenameFree, mpm_reg->pname);
 }
 
@@ -510,9 +509,9 @@ static int DetectFilenameSignatureParseTest01(void)
  */
 static int DetectFilenameTestParse01 (void)
 {
-    DetectFilenameData *dnd = DetectFilenameParse("secret.pdf", false);
+    DetectFilenameData *dnd = DetectFilenameParse(NULL, "secret.pdf", false);
     if (dnd != NULL) {
-        DetectFilenameFree(dnd);
+        DetectFilenameFree(NULL, dnd);
         return 1;
     }
     return 0;
@@ -525,13 +524,13 @@ static int DetectFilenameTestParse02 (void)
 {
     int result = 0;
 
-    DetectFilenameData *dnd = DetectFilenameParse("backup.tar.gz", false);
+    DetectFilenameData *dnd = DetectFilenameParse(NULL, "backup.tar.gz", false);
     if (dnd != NULL) {
         if (dnd->len == 13 && memcmp(dnd->name, "backup.tar.gz", 13) == 0) {
             result = 1;
         }
 
-        DetectFilenameFree(dnd);
+        DetectFilenameFree(NULL, dnd);
         return result;
     }
     return 0;
@@ -544,13 +543,13 @@ static int DetectFilenameTestParse03 (void)
 {
     int result = 0;
 
-    DetectFilenameData *dnd = DetectFilenameParse("cmd.exe", false);
+    DetectFilenameData *dnd = DetectFilenameParse(NULL, "cmd.exe", false);
     if (dnd != NULL) {
         if (dnd->len == 7 && memcmp(dnd->name, "cmd.exe", 7) == 0) {
             result = 1;
         }
 
-        DetectFilenameFree(dnd);
+        DetectFilenameFree(NULL, dnd);
         return result;
     }
     return 0;

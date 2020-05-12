@@ -34,9 +34,7 @@
 #include "detect-engine-content-inspection.h"
 #include "detect-snmp-community.h"
 #include "app-layer-parser.h"
-
-#include "rust-snmp-snmp-gen.h"
-#include "rust-snmp-detect-gen.h"
+#include "rust.h"
 
 static int DetectSNMPCommunitySetup(DetectEngineCtx *, Signature *,
     const char *);
@@ -53,13 +51,13 @@ void DetectSNMPCommunityRegister(void)
 {
     sigmatch_table[DETECT_AL_SNMP_COMMUNITY].name = "snmp.community";
     sigmatch_table[DETECT_AL_SNMP_COMMUNITY].desc =
-        "SNMP content modififier to match on the SNMP community";
+        "SNMP content modifier to match on the SNMP community";
     sigmatch_table[DETECT_AL_SNMP_COMMUNITY].Setup =
         DetectSNMPCommunitySetup;
 #ifdef UNITTESTS
     sigmatch_table[DETECT_AL_SNMP_COMMUNITY].RegisterTests = DetectSNMPCommunityRegisterTests;
 #endif
-    sigmatch_table[DETECT_AL_SNMP_COMMUNITY].url = DOC_URL DOC_VERSION "/rules/snmp-keywords.html#snmp.community";
+    sigmatch_table[DETECT_AL_SNMP_COMMUNITY].url = "/rules/snmp-keywords.html#snmp-community";
 
     sigmatch_table[DETECT_AL_SNMP_COMMUNITY].flags |= SIGMATCH_NOOPT|SIGMATCH_INFO_STICKY_BUFFER;
 
@@ -99,9 +97,9 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
     InspectionBuffer *buffer = InspectionBufferGet(det_ctx, list_id);
     if (buffer->inspect == NULL) {
         uint32_t data_len = 0;
-        uint8_t *data = NULL;
+        const uint8_t *data = NULL;
 
-        rs_snmp_tx_get_community(txv, (uint8_t **)&data, &data_len);
+        rs_snmp_tx_get_community(txv, &data, &data_len);
         if (data == NULL || data_len == 0) {
             return NULL;
         }

@@ -37,7 +37,7 @@
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
 
-static int DetectSameipMatch(ThreadVars *, DetectEngineThreadCtx *, Packet *,
+static int DetectSameipMatch(DetectEngineThreadCtx *, Packet *,
                              const Signature *, const SigMatchCtx *);
 static int DetectSameipSetup(DetectEngineCtx *, Signature *, const char *);
 static void DetectSameipRegisterTests(void);
@@ -50,7 +50,7 @@ void DetectSameipRegister(void)
 {
     sigmatch_table[DETECT_SAMEIP].name = "sameip";
     sigmatch_table[DETECT_SAMEIP].desc = "check if the IP address of the source is the same as the IP address of the destination";
-    sigmatch_table[DETECT_SAMEIP].url = DOC_URL DOC_VERSION "/rules/header-keywords.html#sameip";
+    sigmatch_table[DETECT_SAMEIP].url = "/rules/header-keywords.html#sameip";
     sigmatch_table[DETECT_SAMEIP].Match = DetectSameipMatch;
     sigmatch_table[DETECT_SAMEIP].Setup = DetectSameipSetup;
     sigmatch_table[DETECT_SAMEIP].Free = NULL;
@@ -70,7 +70,7 @@ void DetectSameipRegister(void)
  * \retval 0 no match
  * \retval 1 match
  */
-static int DetectSameipMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectSameipMatch(DetectEngineThreadCtx *det_ctx,
                              Packet *p, const Signature *s, const SigMatchCtx *ctx)
 {
     return CMP_ADDR(&p->src, &p->dst) ? 1 : 0;

@@ -73,7 +73,7 @@ static int DetectEngineInspectFiledata(
         Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
 int PrefilterMpmFiledataRegister(DetectEngineCtx *de_ctx,
         SigGroupHead *sgh, MpmCtx *mpm_ctx,
-        const DetectMpmAppLayerRegistery *mpm_reg, int list_id);
+        const DetectBufferMpmRegistery *mpm_reg, int list_id);
 
 /**
  * \brief Registration function for keyword: file_data
@@ -83,7 +83,7 @@ void DetectFiledataRegister(void)
     sigmatch_table[DETECT_FILE_DATA].name = "file.data";
     sigmatch_table[DETECT_FILE_DATA].alias = "file_data";
     sigmatch_table[DETECT_FILE_DATA].desc = "make content keywords match on file data";
-    sigmatch_table[DETECT_FILE_DATA].url = DOC_URL DOC_VERSION "/rules/http-keywords.html#file-data";
+    sigmatch_table[DETECT_FILE_DATA].url = "/rules/http-keywords.html#file-data";
     sigmatch_table[DETECT_FILE_DATA].Setup = DetectFiledataSetup;
 #ifdef UNITTESTS
     sigmatch_table[DETECT_FILE_DATA].RegisterTests = DetectFiledataRegisterTests;
@@ -97,14 +97,12 @@ void DetectFiledataRegister(void)
             PrefilterGenericMpmRegister,
             HttpServerBodyGetDataCallback,
             ALPROTO_HTTP, HTP_RESPONSE_BODY);
-#ifdef HAVE_RUST
     DetectAppLayerMpmRegister2("file_data", SIG_FLAG_TOSERVER, 2,
             PrefilterMpmFiledataRegister, NULL,
             ALPROTO_SMB, 0);
     DetectAppLayerMpmRegister2("file_data", SIG_FLAG_TOCLIENT, 2,
             PrefilterMpmFiledataRegister, NULL,
             ALPROTO_SMB, 0);
-#endif
 
     DetectAppLayerInspectEngineRegister2("file_data",
             ALPROTO_HTTP, SIG_FLAG_TOCLIENT, HTP_RESPONSE_BODY,
@@ -114,14 +112,12 @@ void DetectFiledataRegister(void)
             DetectEngineInspectFiledata, NULL);
     DetectBufferTypeRegisterSetupCallback("file_data",
             DetectFiledataSetupCallback);
-#ifdef HAVE_RUST
     DetectAppLayerInspectEngineRegister2("file_data",
             ALPROTO_SMB, SIG_FLAG_TOSERVER, 0,
             DetectEngineInspectFiledata, NULL);
     DetectAppLayerInspectEngineRegister2("file_data",
             ALPROTO_SMB, SIG_FLAG_TOCLIENT, 0,
             DetectEngineInspectFiledata, NULL);
-#endif
 
     DetectBufferTypeSetDescriptionByName("file_data",
             "http response body, smb files or smtp attachments data");
@@ -190,7 +186,8 @@ static int DetectFiledataSetup (DetectEngineCtx *de_ctx, Signature *s, const cha
         return -1;
     }
 
-    DetectBufferSetActiveList(s, DetectBufferTypeGetByName("file_data"));
+    if (DetectBufferSetActiveList(s, DetectBufferTypeGetByName("file_data")) < 0)
+        return -1;
 
     SetupDetectEngineConfig(de_ctx);
     return 0;
@@ -408,18 +405,12 @@ static int DetectEngineInspectFiledata(
     int r = 0;
     int match = 0;
 
-    // TODO remove
-    if (f->alproto == ALPROTO_HTTP) {
-        abort();
-    }
-
     const DetectEngineTransforms *transforms = NULL;
     if (!engine->mpm) {
         transforms = engine->v2.transforms;
     }
 
-    FileContainer *ffc = AppLayerParserGetFiles(f->proto, f->alproto,
-                                                f->alstate, flags);
+    FileContainer *ffc = AppLayerParserGetFiles(f, flags);
     if (ffc == NULL) {
         return DETECT_ENGINE_INSPECT_SIG_NO_MATCH;
     }
@@ -471,10 +462,12 @@ typedef struct PrefilterMpmFiledata {
 /** \brief Filedata Filedata Mpm prefilter callback
  *
  *  \param det_ctx detection engine thread ctx
+ *  \param pectx inspection context
  *  \param p packet to inspect
  *  \param f flow to inspect
  *  \param txv tx to inspect
- *  \param pectx inspection context
+ *  \param idx transaction id
+ *  \param flags STREAM_* flags including direction
  */
 static void PrefilterTxFiledata(DetectEngineThreadCtx *det_ctx,
         const void *pectx,
@@ -487,8 +480,7 @@ static void PrefilterTxFiledata(DetectEngineThreadCtx *det_ctx,
     const MpmCtx *mpm_ctx = ctx->mpm_ctx;
     const int list_id = ctx->list_id;
 
-    FileContainer *ffc = AppLayerParserGetFiles(f->proto, f->alproto,
-                                                f->alstate, flags);
+    FileContainer *ffc = AppLayerParserGetFiles(f, flags);
     int local_file_id = 0;
     if (ffc != NULL) {
         File *file = ffc->head;
@@ -506,6 +498,7 @@ static void PrefilterTxFiledata(DetectEngineThreadCtx *det_ctx,
                         &det_ctx->mtcu, &det_ctx->pmq,
                         buffer->inspect, buffer->inspect_len);
             }
+            local_file_id++;
         }
     }
 }
@@ -517,17 +510,17 @@ static void PrefilterMpmFiledataFree(void *ptr)
 
 int PrefilterMpmFiledataRegister(DetectEngineCtx *de_ctx,
         SigGroupHead *sgh, MpmCtx *mpm_ctx,
-        const DetectMpmAppLayerRegistery *mpm_reg, int list_id)
+        const DetectBufferMpmRegistery *mpm_reg, int list_id)
 {
     PrefilterMpmFiledata *pectx = SCCalloc(1, sizeof(*pectx));
     if (pectx == NULL)
         return -1;
     pectx->list_id = list_id;
     pectx->mpm_ctx = mpm_ctx;
-    pectx->transforms = &mpm_reg->v2.transforms;
+    pectx->transforms = &mpm_reg->transforms;
 
     return PrefilterAppendTxEngine(de_ctx, sgh, PrefilterTxFiledata,
-            mpm_reg->v2.alproto, mpm_reg->v2.tx_min_progress,
+            mpm_reg->app_v2.alproto, mpm_reg->app_v2.tx_min_progress,
             pectx, PrefilterMpmFiledataFree, mpm_reg->pname);
 }
 

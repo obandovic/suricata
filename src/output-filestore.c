@@ -22,6 +22,8 @@
 #include "app-layer-htp-xff.h"
 #include "app-layer-smtp.h"
 
+#include "feature.h"
+
 #include "output.h"
 #include "output-filestore.h"
 #include "output-json-file.h"
@@ -61,7 +63,7 @@ typedef struct OutputFilestoreLogThread_ {
 
 /* For WARN_ONCE, a record of warnings that have already been
  * issued. */
-static __thread bool once_errs[SC_ERR_MAX];
+static thread_local bool once_errs[SC_ERR_MAX];
 
 #define WARN_ONCE(err_code, ...)  do {                   \
         if (!once_errs[err_code]) {                      \
@@ -470,6 +472,8 @@ static OutputInitResult OutputFilestoreLogInitCtx(ConfNode *conf)
 
     /* The new filestore requires SHA256. */
     FileForceSha256Enable();
+
+    ProvidesFeature(FEATURE_OUTPUT_FILESTORE);
 
     const char *stream_depth_str = ConfNodeLookupChildValue(conf,
             "stream-depth");

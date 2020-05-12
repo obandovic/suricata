@@ -12,7 +12,7 @@ The content keyword is very important in signatures. Between the
 quotation marks you can write on what you would like the signature to
 match. The most simple format of content is::
 
-  content: ”............”;
+  content: "............";
 
 It is possible to use several contents in a signature.
 
@@ -38,7 +38,7 @@ There are characters you can not use in the content because they are
 already important in the signature. For matching on these characters
 you should use the heximal notation. These are::
 
-  “	|22|
+  "	|22|
   ;	|3B|
   :	|3A|
   |	|7C|
@@ -46,16 +46,16 @@ you should use the heximal notation. These are::
 It is a convention to write the heximal notation in upper case characters.
 
 To write for instance ``http://`` in the content of a signature, you
-should write it like this: ``content: “http|3A|//”;`` If you use a
+should write it like this: ``content: "http|3A|//";`` If you use a
 heximal notation in a signature, make sure you always place it between
 pipes. Otherwise the notation will be taken literally as part of the
 content.
 
 A few examples::
 
-  content:“a|0D|bc”;
-  content:”|61 0D 62 63|";
-  content:”a|0D|b|63|”;
+  content:"a|0D|bc";
+  content:"|61 0D 62 63|";
+  content:"a|0D|b|63|";
 
 It is possible to let a signature check the whole payload for a match with the content or to let it check specific parts of the payload. We come to that later.
 If you add nothing special to the signature, it will try to find a match in all the bytes of the payload.
@@ -83,7 +83,7 @@ For example::
   content:"Firefox/3."; distance:0; content:!"Firefox/3.6.13";
   distance:-10; sid:9000000; rev:1;)
 
-You see ``content:!”Firefox/3.6.13”;``. This means an alert will be
+You see ``content:!"Firefox/3.6.13";``. This means an alert will be
 generated if the used version of Firefox is not 3.6.13.
 
 .. note:: The following characters must be escaped inside the content:
@@ -102,7 +102,7 @@ The format of this keyword is::
 
 You have to place it after the content you want to modify, like::
 
-  content: “abc”; nocase;
+  content: "abc"; nocase;
 
 Example nocase:
 
@@ -144,6 +144,24 @@ Example::
 ``startswith`` cannot be mixed with ``depth``, ``offset``, ``within`` or
 ``distance`` for the same pattern.
 
+endswith
+--------
+
+The ``endswith`` keyword is similar to ``isdataat:!1,relative;``. It takes no
+arguments and must follow a ``content`` keyword. It modifies the ``content`` to
+match exactly at the end of a buffer.
+
+Example::
+
+    content:".php"; endswith;
+
+``endswith`` is a short hand notation for::
+
+    content:".php"; isdatat:!1,relative;
+
+``endswith`` cannot be mixed with ``offset``, ``within`` or
+``distance`` for the same pattern.
+
 offset
 ------
 
@@ -157,7 +175,7 @@ The keywords offset and depth can be combined and are often used together.
 
 For example::
 
-  content:“def”; offset:3; depth:3;
+  content:"def"; offset:3; depth:3;
 
 If this was used in a signature, it would check the payload from the
 third byte till the sixth byte.
@@ -246,6 +264,21 @@ You can also use the negation (!) before isdataat.
 
 .. image:: payload-keywords/isdataat1.png
 
+bsize
+-----
+
+With the bsize keyword, you can match on the length of the buffer. This adds precision to the content match, previously this could have been done with isdataat.
+
+Format::
+
+  bsize:<number>;
+
+Example of bsize in a rule:
+
+.. container:: example-rule
+
+   alert dns any any -> any any (msg:"test bsize rule"; dns.query; content:"google.com"; bsize:10; sid:123; rev:1;)
+
 dsize
 -----
 
@@ -258,7 +291,7 @@ Format::
 
   dsize:<number>;
 
-example of dsize in a rule:
+Example of dsize in a rule:
 
 .. container:: example-rule
 
@@ -266,7 +299,11 @@ example of dsize in a rule:
 
 byte_test
 ---------
-The ``byte_test`` keyword extracts ``<num of bytes>`` and performs an operation selected with ``<operator>`` against the value in ``<test value>`` at a particular ``<offset>``.
+The ``byte_test`` keyword extracts ``<num of bytes>`` and performs an operation selected
+with ``<operator>`` against the value in ``<test value>`` at a particular ``<offset>``.
+The ``<bitmask value>`` is applied to the extracted bytes (before the operator is applied),
+and the final result will be right shifted one bit for each trailing ``0`` in
+the ``<bitmask value>``.
 
 Format::
   
@@ -299,7 +336,7 @@ Format::
 +----------------+------------------------------------------------------------------------------+
 | [string] <num> | 										|
 |		 | - hex - Converted string represented in hex					|
-|		 | - dec - Converted string represented in dedimal				|
+|		 | - dec - Converted string represented in decimal				|
 |		 | - oct - Converted string represented in octal				|
 +----------------+------------------------------------------------------------------------------+
 | [dce]		 | Allow the DCE module determine the byte order 				|
@@ -324,7 +361,7 @@ Example::
 
   alert tcp any any -> any any \ 
          (msg:"Byte_Test Example - Detect Large Values"; content:"|00 01 00 02|"; \
-         byte_test:2,>,1000,relavtive;)
+         byte_test:2,>,1000,relative;)
 
   alert tcp any any -> any any \
 	 (msg:"Byte_Test Example - Lowest bit is set"; \
@@ -516,7 +553,7 @@ These qualities can be modified with the following characters::
 These options are perl compatible modifiers. To use these modifiers,
 you should add them to pcre, behind regex. Like this::
 
-  pcre: “/<regex>/i”;
+  pcre: "/<regex>/i";
 
 *Pcre compatible modifiers*
 

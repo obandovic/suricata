@@ -52,7 +52,7 @@ const char *DetectBufferTypeGetDescriptionByName(const char *name);
 void DetectBufferTypeRegisterSetupCallback(const char *name,
         void (*Callback)(const DetectEngineCtx *, Signature *));
 void DetectBufferTypeRegisterValidateCallback(const char *name,
-        _Bool (*ValidateCallback)(const Signature *, const char **sigerror));
+        bool (*ValidateCallback)(const Signature *, const char **sigerror));
 
 int DetectBufferTypeGetByIdTransforms(DetectEngineCtx *de_ctx, const int id,
         int *transforms, int transform_cnt);
@@ -124,6 +124,11 @@ int DetectEngineInspectBufferGeneric(
         const Signature *s,
         Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
 
+int DetectEngineInspectPktBufferGeneric(
+        DetectEngineThreadCtx *det_ctx,
+        const DetectEnginePktInspectionEngine *engine,
+        const Signature *s, Packet *p, uint8_t *alert_flags);
+
 /**
  * \brief Registers an app inspection engine.
  *
@@ -142,14 +147,24 @@ void DetectAppLayerInspectEngineRegister2(const char *name,
         InspectEngineFuncPtr2 Callback2,
         InspectionBufferGetDataPtr GetData);
 
+void DetectPktInspectEngineRegister(const char *name,
+        InspectionBufferGetPktDataPtr GetPktData,
+        InspectionBufferPktInspectFunc Callback);
+
 int DetectEngineAppInspectionEngine2Signature(DetectEngineCtx *de_ctx, Signature *s);
-void DetectEngineAppInspectionEngineSignatureFree(Signature *s);
+void DetectEngineAppInspectionEngineSignatureFree(DetectEngineCtx *, Signature *s);
+
+bool DetectEnginePktInspectionRun(ThreadVars *tv,
+        DetectEngineThreadCtx *det_ctx, const Signature *s,
+        Flow *f, Packet *p,
+        uint8_t *alert_flags);
+int DetectEnginePktInspectionSetup(Signature *s);
 
 void DetectEngineSetParseMetadata(void);
 void DetectEngineUnsetParseMetadata(void);
 int DetectEngineMustParseMetadata(void);
 
-int DetectBufferSetActiveList(Signature *s, const int list);
+int WARN_UNUSED DetectBufferSetActiveList(Signature *s, const int list);
 int DetectBufferGetActiveList(DetectEngineCtx *de_ctx, Signature *s);
 
 #endif /* __DETECT_ENGINE_H__ */

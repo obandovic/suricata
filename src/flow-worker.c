@@ -35,6 +35,7 @@
 #include "suricata.h"
 
 #include "decode.h"
+#include "detect.h"
 #include "stream-tcp.h"
 #include "app-layer.h"
 #include "detect-engine.h"
@@ -59,7 +60,12 @@ typedef struct FlowWorkerThreadData_ {
 
     void *output_thread; /* Output thread data. */
 
-    PacketQueue pq;
+    uint16_t local_bypass_pkts;
+    uint16_t local_bypass_bytes;
+    uint16_t both_bypass_pkts;
+    uint16_t both_bypass_bytes;
+
+    PacketQueueNoLock pq;
 
 } FlowWorkerThreadData;
 
@@ -67,14 +73,21 @@ typedef struct FlowWorkerThreadData_ {
  *
  *  Handle flow creation/lookup
  */
-static inline TmEcode FlowUpdate(Packet *p)
+static inline TmEcode FlowUpdate(ThreadVars *tv, FlowWorkerThreadData *fw, Packet *p)
 {
     FlowHandlePacketUpdate(p->flow, p);
 
     int state = SC_ATOMIC_GET(p->flow->flow_state);
     switch (state) {
+#ifdef CAPTURE_OFFLOAD
         case FLOW_STATE_CAPTURE_BYPASSED:
+            StatsAddUI64(tv, fw->both_bypass_pkts, 1);
+            StatsAddUI64(tv, fw->both_bypass_bytes, GET_PKT_LEN(p));
+            return TM_ECODE_DONE;
+#endif
         case FLOW_STATE_LOCAL_BYPASSED:
+            StatsAddUI64(tv, fw->local_bypass_pkts, 1);
+            StatsAddUI64(tv, fw->local_bypass_bytes, GET_PKT_LEN(p));
             return TM_ECODE_DONE;
         default:
             return TM_ECODE_OK;
@@ -89,8 +102,13 @@ static TmEcode FlowWorkerThreadInit(ThreadVars *tv, const void *initdata, void *
     if (fw == NULL)
         return TM_ECODE_FAILED;
 
-    SC_ATOMIC_INIT(fw->detect_thread);
+    SC_ATOMIC_INITPTR(fw->detect_thread);
     SC_ATOMIC_SET(fw->detect_thread, NULL);
+
+    fw->local_bypass_pkts = StatsRegisterCounter("flow_bypassed.local_pkts", tv);
+    fw->local_bypass_bytes = StatsRegisterCounter("flow_bypassed.local_bytes", tv);
+    fw->both_bypass_pkts = StatsRegisterCounter("flow_bypassed.local_capture_pkts", tv);
+    fw->both_bypass_bytes = StatsRegisterCounter("flow_bypassed.local_capture_bytes", tv);
 
     fw->dtv = DecodeThreadVarsAlloc(tv);
     if (fw->dtv == NULL) {
@@ -124,8 +142,7 @@ static TmEcode FlowWorkerThreadInit(ThreadVars *tv, const void *initdata, void *
     AppLayerRegisterThreadCounters(tv);
 
     /* setup pq for stream end pkts */
-    memset(&fw->pq, 0, sizeof(PacketQueue));
-    SCMutexInit(&fw->pq.mutex_q, NULL);
+    memset(&fw->pq, 0, sizeof(PacketQueueNoLock));
 
     *data = fw;
     return TM_ECODE_OK;
@@ -152,17 +169,24 @@ static TmEcode FlowWorkerThreadDeinit(ThreadVars *tv, void *data)
 
     /* free pq */
     BUG_ON(fw->pq.len);
-    SCMutexDestroy(&fw->pq.mutex_q);
 
-    SC_ATOMIC_DESTROY(fw->detect_thread);
     SCFree(fw);
     return TM_ECODE_OK;
 }
 
-TmEcode Detect(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueue *postpq);
-TmEcode StreamTcp (ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
+static void FlowPruneFiles(Packet *p)
+{
+    if (p->flow && p->flow->alstate) {
+        Flow *f = p->flow;
+        FileContainer *fc = AppLayerParserGetFiles(f,
+                PKT_IS_TOSERVER(p) ? STREAM_TOSERVER : STREAM_TOCLIENT);
+        if (fc != NULL) {
+            FilePrune(fc);
+        }
+    }
+}
 
-static TmEcode FlowWorker(ThreadVars *tv, Packet *p, void *data, PacketQueue *preq, PacketQueue *unused)
+static TmEcode FlowWorker(ThreadVars *tv, Packet *p, void *data)
 {
     FlowWorkerThreadData *fw = data;
     void *detect_thread = SC_ATOMIC_GET(fw->detect_thread);
@@ -181,7 +205,7 @@ static TmEcode FlowWorker(ThreadVars *tv, Packet *p, void *data, PacketQueue *pr
         FlowHandlePacket(tv, fw->dtv, p);
         if (likely(p->flow != NULL)) {
             DEBUG_ASSERT_FLOW_LOCKED(p->flow);
-            if (FlowUpdate(p) == TM_ECODE_DONE) {
+            if (FlowUpdate(tv, fw, p) == TM_ECODE_DONE) {
                 FLOWLOCK_UNLOCK(p->flow);
                 return TM_ECODE_OK;
             }
@@ -213,7 +237,7 @@ static TmEcode FlowWorker(ThreadVars *tv, Packet *p, void *data, PacketQueue *pr
         }
 
         FLOWWORKER_PROFILING_START(p, PROFILE_FLOWWORKER_STREAM);
-        StreamTcp(tv, p, fw->stream_thread, &fw->pq, NULL);
+        StreamTcp(tv, p, fw->stream_thread, &fw->pq);
         FLOWWORKER_PROFILING_END(p, PROFILE_FLOWWORKER_STREAM);
 
         if (FlowChangeProto(p->flow)) {
@@ -223,14 +247,14 @@ static TmEcode FlowWorker(ThreadVars *tv, Packet *p, void *data, PacketQueue *pr
         /* Packets here can safely access p->flow as it's locked */
         SCLogDebug("packet %"PRIu64": extra packets %u", p->pcap_cnt, fw->pq.len);
         Packet *x;
-        while ((x = PacketDequeue(&fw->pq))) {
+        while ((x = PacketDequeueNoLock(&fw->pq))) {
             SCLogDebug("packet %"PRIu64" extra packet %p", p->pcap_cnt, x);
 
             // TODO do we need to call StreamTcp on these pseudo packets or not?
             //StreamTcp(tv, x, fw->stream_thread, &fw->pq, NULL);
             if (detect_thread != NULL) {
                 FLOWWORKER_PROFILING_START(x, PROFILE_FLOWWORKER_DETECT);
-                Detect(tv, x, detect_thread, NULL, NULL);
+                Detect(tv, x, detect_thread);
                 FLOWWORKER_PROFILING_END(x, PROFILE_FLOWWORKER_DETECT);
             }
 
@@ -239,7 +263,7 @@ static TmEcode FlowWorker(ThreadVars *tv, Packet *p, void *data, PacketQueue *pr
 
             /* put these packets in the preq queue so that they are
              * by the other thread modules before packet 'p'. */
-            PacketEnqueue(preq, x);
+            PacketEnqueueNoLock(&tv->decode_pq, x);
         }
 
     /* handle the app layer part of the UDP packet payload */
@@ -257,12 +281,15 @@ static TmEcode FlowWorker(ThreadVars *tv, Packet *p, void *data, PacketQueue *pr
 
     if (detect_thread != NULL) {
         FLOWWORKER_PROFILING_START(p, PROFILE_FLOWWORKER_DETECT);
-        Detect(tv, p, detect_thread, NULL, NULL);
+        Detect(tv, p, detect_thread);
         FLOWWORKER_PROFILING_END(p, PROFILE_FLOWWORKER_DETECT);
     }
 
     // Outputs.
     OutputLoggerLog(tv, p, fw->output_thread);
+
+    /* Prune any stored files. */
+    FlowPruneFiles(p);
 
     /*  Release tcp segments. Done here after alerting can use them. */
     if (p->flow != NULL && p->proto == IPPROTO_TCP) {

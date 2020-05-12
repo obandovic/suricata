@@ -1,13 +1,12 @@
-    AC_INIT(suricata, 5.0.0-dev)
+    AC_INIT([suricata],[6.0.0-dev])
     m4_ifndef([AM_SILENT_RULES], [m4_define([AM_SILENT_RULES],[])])AM_SILENT_RULES([yes])
     AC_CONFIG_HEADERS([config.h])
     AC_CONFIG_SRCDIR([src/suricata.c])
     AC_CONFIG_MACRO_DIR(m4)
-    AM_INIT_AUTOMAKE
+    AM_INIT_AUTOMAKE([tar-ustar subdir-objects])
 
-    AC_LANG_C
-    AC_PROG_CC_C99
-    AC_PROG_LIBTOOL
+    AC_LANG([C])
+    LT_INIT
     PKG_PROG_PKG_CONFIG
 
     dnl Taken from https://llvm.org/svn/llvm-project/llvm/trunk/autoconf/configure.ac
@@ -29,19 +28,18 @@
     AC_LANG_POP([C])
     AC_MSG_RESULT([${compiler}])
 
+    AC_ARG_WITH([clang],
+                [  --with-clang=PROGRAM    path to Clang for compiling eBPF code. Use if the main C compiler is not Clang.],
+                [CLANG="$withval"],
+                [AS_IF([test "$compiler" = clang],
+                       [CLANG="$CC"],
+                       [AC_PATH_PROG([CLANG],[clang])])])
+
+    AC_SUBST([CLANG])
+
     case "$compiler" in
         clang)
             CLANG_CFLAGS="-Wextra -Werror-implicit-function-declaration -Wno-error=unused-command-line-argument"
-            AC_MSG_CHECKING([clang __sync_bool_compare_and_swap support])
-            AC_TRY_COMPILE([#include <stdio.h>],
-                [ unsigned int i = 0; (void)__sync_bool_compare_and_swap(&i, 1, 1);],
-                [
-                    AC_DEFINE([__GCC_HAVE_SYNC_COMPARE_AND_SWAP_1], [1], [Fake GCC atomic support])
-                    AC_DEFINE([__GCC_HAVE_SYNC_COMPARE_AND_SWAP_2], [1], [Fake GCC atomic support])
-                    AC_DEFINE([__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4], [1], [Fake GCC atomic support])
-                    AC_DEFINE([__GCC_HAVE_SYNC_COMPARE_AND_SWAP_8], [1], [Fake GCC atomic support])
-                    AC_MSG_RESULT([yes]) ],
-                [AC_MSG_RESULT([no])])
             AC_SUBST(CLANG_CFLAGS)
             ;;
         gcc)
@@ -70,13 +68,14 @@
     AC_PROG_AWK
     AC_PROG_CC
     AC_PROG_CPP
+    AC_PROG_RANLIB
     AC_PROG_INSTALL
     AC_PROG_LN_S
     AC_PROG_MAKE_SET
     AC_PROG_GREP
 
     AC_PATH_PROG(HAVE_CYGPATH, cygpath, "no")
-    AM_CONDITIONAL([HAVE_CYGPATH], [test "x$enable_cygpath" = "xyes"])
+    AM_CONDITIONAL([HAVE_CYGPATH], [test "x$HAVE_CYGPATH" != "xno"])
 
     AC_PATH_PROG(HAVE_PKG_CONFIG, pkg-config, "no")
     if test "$HAVE_PKG_CONFIG" = "no"; then
@@ -88,7 +87,6 @@
         exit 1
     fi
 
-    python_version="not set"
     python_path="not set"
 
     AC_ARG_ENABLE(python,
@@ -100,16 +98,24 @@
         AC_PATH_PROGS(HAVE_PYTHON, python3 python2.7 python2 python, "no")
         if test "$HAVE_PYTHON" = "no"; then
             echo
-            echo "   Warning! python not found, you will not be     "
-            echo "   able to install suricatasc unix socket client   "
+            echo "   Warning! Python not found."
+            echo
+            echo "   Python is required for additional tools like"
+            echo "   suricatasc, suricatactl and suricata-update."
+            echo "   It is also required when building from git."
             echo
             enable_python="no"
 	else
 	    python_path="$HAVE_PYTHON"
-	    python_version="$($HAVE_PYTHON --version)"
         fi
     fi
     AM_CONDITIONAL([HAVE_PYTHON], [test "x$enable_python" = "xyes"])
+
+    # Get the Python major version. This is only for information
+    # messages displayed during configure.
+    if test "x$HAVE_PYTHON" != "xno"; then
+       pymv="$($HAVE_PYTHON -c 'import sys; print(sys.version_info[[0]]);')"
+    fi
 
     # Check for python-distutils (setup).
     have_python_distutils="no"
@@ -129,7 +135,8 @@
        echo "    Warning: Python distutils not found. Python tools will"
        echo "        not be installed."
        echo ""
-       echo "    Ubuntu/Debian: apt install `basename ${HAVE_PYTHON}`-distutils"
+       echo "    Install the distutils module for Python ${pymv} to enable"
+       echo "    the Python tools."
        echo ""
     fi
 
@@ -167,15 +174,17 @@
     AC_CHECK_HEADERS([limits.h netdb.h netinet/in.h poll.h sched.h signal.h])
     AC_CHECK_HEADERS([stdarg.h stdint.h stdio.h stdlib.h stdbool.h string.h strings.h sys/ioctl.h])
     AC_CHECK_HEADERS([syslog.h sys/prctl.h sys/socket.h sys/stat.h sys/syscall.h])
-    AC_CHECK_HEADERS([sys/time.h time.h unistd.h])
+    AC_CHECK_HEADERS([sys/time.h time.h unistd.h sys/param.h])
     AC_CHECK_HEADERS([sys/ioctl.h linux/if_ether.h linux/if_packet.h linux/filter.h])
     AC_CHECK_HEADERS([linux/ethtool.h linux/sockios.h])
-    AC_CHECK_HEADERS([glob.h])
+    AC_CHECK_HEADERS([glob.h locale.h grp.h pwd.h])
     AC_CHECK_HEADERS([dirent.h fnmatch.h])
     AC_CHECK_HEADERS([sys/resource.h sys/types.h sys/un.h])
     AC_CHECK_HEADERS([sys/random.h])
     AC_CHECK_HEADERS([utime.h])
     AC_CHECK_HEADERS([libgen.h])
+    AC_CHECK_HEADERS([mach/mach.h])
+    AC_CHECK_HEADERS([stdatomic.h])
 
     AC_CHECK_HEADERS([sys/socket.h net/if.h sys/mman.h linux/if_arp.h], [], [],
     [[#ifdef HAVE_SYS_SOCKET_H
@@ -200,28 +209,47 @@
 
     # Checks for typedefs, structures, and compiler characteristics.
     AC_C_INLINE
+    AC_C_RESTRICT
     AC_TYPE_PID_T
+    AC_TYPE_MODE_T
     AC_TYPE_SIZE_T
+    AC_TYPE_SSIZE_T
+    AC_TYPE_INT8_T
+    AC_TYPE_INT16_T
     AC_TYPE_INT32_T
+    AC_TYPE_INT64_T
+    AC_TYPE_UINT8_T
     AC_TYPE_UINT16_T
     AC_TYPE_UINT32_T
     AC_TYPE_UINT64_T
-    AC_TYPE_UINT8_T
+    AC_TYPE_UINT
+    AC_TYPE_USHORT
+    AC_TYPE_ULONG
+    AC_TYPE_UCHAR
+    AC_STRUCT_TIMEZONE
+    AC_CHECK_TYPES([ptrdiff_t])
     AC_HEADER_STDBOOL
 
     # Checks for library functions.
     AC_FUNC_MALLOC
     AC_FUNC_REALLOC
-    AC_CHECK_FUNCS([gettimeofday memset strcasecmp strchr strdup strerror strncasecmp strtol strtoul memchr memrchr clock_gettime])
-    AC_CHECK_FUNCS([strptime])
+    AC_FUNC_FORK
+    AC_FUNC_MKTIME
+    AC_FUNC_MMAP
+    AC_FUNC_STRTOD
+
+    AC_CHECK_FUNCS([memmem memset memchr memrchr memmove])
+    AC_CHECK_FUNCS([strcasecmp strchr strrchr strdup strndup strncasecmp strtol strtoul strstr strpbrk strtoull strtoumax])
+    AC_CHECK_FUNCS([strerror])
+    AC_CHECK_FUNCS([gethostname inet_ntoa uname])
+    AC_CHECK_FUNCS([gettimeofday clock_gettime utime strptime tzset localtime_r])
+    AC_CHECK_FUNCS([socket setenv select putenv dup2 endgrent endpwent atexit munmap])
 
     AC_CHECK_DECL([getrandom],
         AC_DEFINE([HAVE_GETRANDOM], [1], [Use getrandom]),
         [], [
             #include <sys/random.h> 
             ])
-
-    AC_CHECK_FUNCS([utime])
 
     OCFLAGS=$CFLAGS
     CFLAGS=""
@@ -234,8 +262,7 @@
     #check for os
     AC_MSG_CHECKING([host os])
 
-    # lua pkg-config name differs per OS
-    LUA_PC_NAME="lua5.1"
+    # Default lua libname if not detected otherwise.
     LUA_LIB_NAME="lua5.1"
 
     # If no host os was detected, try with uname
@@ -251,7 +278,6 @@
     PCAP_LIB_NAME="pcap"
     case "$host" in
         *-*-*freebsd*)
-            LUA_PC_NAME="lua-5.1"
             LUA_LIB_NAME="lua-5.1"
             CFLAGS="${CFLAGS} -DOS_FREEBSD"
             CPPFLAGS="${CPPFLAGS} -I/usr/local/include -I/usr/local/include/libnet11"
@@ -259,14 +285,12 @@
             RUST_LDADD="-lrt -lm"
             ;;
         *-*-openbsd*)
-            LUA_PC_NAME="lua51"
             CFLAGS="${CFLAGS} -D__OpenBSD__"
             CPPFLAGS="${CPPFLAGS} -I/usr/local/include -I/usr/local/include/libnet-1.1"
             LDFLAGS="${LDFLAGS} -L/usr/local/lib -I/usr/local/lib/libnet-1.1"
             RUST_LDADD="-lm -lc++ -lc++abi"
             ;;
         *darwin*|*Darwin*)
-            LUA_PC_NAME="lua-5.1"
             LUA_LIB_NAME="lua-5.1"
             CFLAGS="${CFLAGS} -DOS_DARWIN"
             CPPFLAGS="${CPPFLAGS} -I/opt/local/include"
@@ -285,7 +309,6 @@
             RUST_LDADD="-luserenv -lshell32 -ladvapi32 -lgcc_eh"
             ;;
         *-*-cygwin)
-            LUA_PC_NAME="lua"
             LUA_LIB_NAME="lua"
             WINDOWS_PATH="yes"
             PCAP_LIB_NAME="wpcap"
@@ -300,42 +323,35 @@
     esac
     AC_MSG_RESULT(ok)
 
-    # enable modifications for AFL fuzzing
-    AC_ARG_ENABLE(afl,
-           AS_HELP_STRING([--enable-afl], Enable AFL fuzzing logic[])], [enable_afl="$enableval"],[enable_afl=no])
+    # check if our target supports c11
+    AC_MSG_CHECKING(for c11 support)
+    OCFLAGS=$CFLAGS
+    CFLAGS="-std=c11"
+    AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdlib.h>]],
+                [[ static _Thread_local int i; i = 1; i++; ]])],
+            AC_MSG_RESULT([yes])
+            [AC_DEFINE([TLS_C11], [1], [C11 Thread local storage])
+             CFLAGS="$OCFLAGS -std=c11"],
+            [AC_MSG_RESULT([no])
+             CFLAGS="$OCFLAGS"
+             have_c11=no
+             have_c11_tls=no])
+    if [ test "x$have_c11" = "xno" ]; then
+        CFLAGS="$CFLAGS -std=gnu99"
+    fi
 
-    AS_IF([test "x$enable_afl" = "xyes"], [
-        AC_DEFINE([AFLFUZZ_NO_RANDOM], [1], [Disable all use of random functions])
-        AC_DEFINE([AFLFUZZ_DISABLE_MGTTHREADS], [1], [Disable all management threads])
-        AC_DEFINE([AFLFUZZ_PCAP_RUNMODE], [1], [Enable special AFL 'single' runmode])
-        AC_DEFINE([AFLFUZZ_CONF_TEST], [1], [Enable special --afl-parse-rules commandline option])
-        AC_DEFINE([AFLFUZZ_APPLAYER], [1], [Enable --afl-$proto-request commandline option])
-        AC_DEFINE([AFLFUZZ_MIME], [1], [Enable --afl-mime commandline option])
-        AC_DEFINE([AFLFUZZ_DECODER], [1], [Enable --afl-decoder-$proto commandline option])
-        AC_DEFINE([AFLFUZZ_DER], [1], [Enable --afl-der commandline option])
-        AC_DEFINE([AFLFUZZ_RULES], [1], [Enable --afl-rules commandline option])
-
-        # test for AFL PERSISTANT_MODE support
-        CFLAGS_ORIG=$CFLAGS
-        CFLAGS="-Werror"
-        AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]], [[while (__AFL_LOOP(1000))]])],
-                [AC_DEFINE([AFLFUZZ_PERSISTANT_MODE], [1], [Enable AFL PERSISTANT_MODE])],
-                [])
-        CFLAGS=$CFLAGS_ORIG
-    ])
-
-  # disable TLS on user request
-    AC_ARG_ENABLE(threading-tls,
-           AS_HELP_STRING([--disable-threading-tls], [Disable TLS (thread local storage)]), [enable_tls="$enableval"],[enable_tls=yes])
-    AS_IF([test "x$enable_tls" = "xyes"], [
-        # check if our target supports thread local storage
-        AC_MSG_CHECKING(for thread local storage __thread support)
-        AC_TRY_COMPILE([#include <stdlib.h>],
-            [ static __thread int i; i = 1; i++; ],
-            [AC_DEFINE([TLS], [1], [Thread local storage])
-             AC_MSG_RESULT([yes]) ],
-            [AC_MSG_RESULT([no])])
-    ])
+    # check if our target supports thread local storage
+    AC_MSG_CHECKING(for thread local storage gnu __thread support)
+    AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdlib.h>]],
+                [[ static __thread int i; i = 1; i++; ]])],
+            [AC_DEFINE([TLS_GNU], [1], [Thread local storage])
+            AC_MSG_RESULT([yes])],
+            [AC_MSG_RESULT([no])
+             have_gnu_tls=no])
+    if [ test "x$have_c11_tls" = "xno" ] && [ test "x$have_gnu_tls" = "xno" ]; then
+        AC_MSG_ERROR("no thread local support available.")
+        exit 1
+    fi
 
     #Enable support for gcc compile time security options. There is no great way to do detection of valid cflags that I have found
     #AX_CFLAGS_GCC_OPTION don't seem to do a better job than the code below and are a pain because of extra m4 files etc.
@@ -349,45 +365,45 @@
         AC_MSG_CHECKING(for -fstack-protector)
         TMPCFLAGS="${CFLAGS}"
         CFLAGS="${CFLAGS} -fstack-protector"
-        AC_TRY_LINK(,,SECCFLAGS="-fstack-protector"
-            AC_MSG_RESULT(yes),
-            AC_MSG_RESULT(no))
+        AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[]])],[SECCFLAGS="-fstack-protector"
+            AC_MSG_RESULT(yes)],
+            [AC_MSG_RESULT(no)])
         CFLAGS="${TMPCFLAGS}"
 
         #compile-time best-practices errors for certain libc functions, provides checks of buffer lengths and memory regions
         AC_MSG_CHECKING(for -D_FORTIFY_SOURCE=2)
         TMPCFLAGS="${CFLAGS}"
         CFLAGS="${CFLAGS} -D_FORTIFY_SOURCE=2"
-        AC_TRY_COMPILE(,,SECCFLAGS="${SECCFLAGS} -D_FORTIFY_SOURCE=2"
-            AC_MSG_RESULT(yes),
-            AC_MSG_RESULT(no))
+        AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]], [[]])],[SECCFLAGS="${SECCFLAGS} -D_FORTIFY_SOURCE=2"
+            AC_MSG_RESULT(yes)],
+            [AC_MSG_RESULT(no)])
         CFLAGS="${TMPCFLAGS}"
 
         #compile-time warnings about misuse of format strings
         AC_MSG_CHECKING(for -Wformat -Wformat-security)
         TMPCFLAGS="${CFLAGS}"
         CFLAGS="${CFLAGS} -Wformat -Wformat-security"
-        AC_TRY_COMPILE(,,SECCFLAGS="${SECCFLAGS} -Wformat -Wformat-security"
-            AC_MSG_RESULT(yes),
-            AC_MSG_RESULT(no))
+        AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]], [[]])],[SECCFLAGS="${SECCFLAGS} -Wformat -Wformat-security"
+            AC_MSG_RESULT(yes)],
+            [AC_MSG_RESULT(no)])
         CFLAGS="${TMPCFLAGS}"
 
         #provides a read-only relocation table area in the final ELF
         AC_MSG_CHECKING(for -z relro)
         TMPLDFLAGS="${LDFLAGS}"
         LDFLAGS="${LDFLAGS} -z relro"
-        AC_TRY_LINK(,,SECLDFLAGS="${SECLDFLAGS} -z relro"
-            AC_MSG_RESULT(yes),
-            AC_MSG_RESULT(no))
+        AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[]])],[SECLDFLAGS="${SECLDFLAGS} -z relro"
+            AC_MSG_RESULT(yes)],
+            [AC_MSG_RESULT(no)])
         LDFLAGS="${TMPLDFLAGS}"
 
         #forces all relocations to be resolved at run-time
         AC_MSG_CHECKING(for -z now)
         TMPLDFLAGS="${LDFLAGS}"
         LDFLAGS="${LDFLAGS} -z now"
-        AC_TRY_LINK(,,SECLDFLAGS="${SECLDFLAGS} -z now"
-            AC_MSG_RESULT(yes),
-            AC_MSG_RESULT(no))
+        AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[]])],[SECLDFLAGS="${SECLDFLAGS} -z now"
+            AC_MSG_RESULT(yes)],
+            [AC_MSG_RESULT(no)])
         LDFLAGS="${TMPLDFLAGS}"
 
         AC_SUBST(SECCFLAGS)
@@ -430,6 +446,47 @@
 
 # options
 
+
+    AC_ARG_ENABLE(fuzztargets,
+        AS_HELP_STRING([--enable-fuzztargets], [Enable fuzz targets]),[enable_fuzztargets=$enableval],[enable_fuzztargets=no])
+    AM_CONDITIONAL([BUILD_FUZZTARGETS], [test "x$enable_fuzztargets" = "xyes"])
+    AC_PROG_CXX
+    AS_IF([test "x$enable_fuzztargets" = "xyes"], [
+        AC_DEFINE([FUZZ], [1], [Fuzz targets are enabled])
+        AC_DEFINE([AFLFUZZ_NO_RANDOM], [1], [Disable all use of random functions])
+        CFLAGS_ORIG=$CFLAGS
+        CFLAGS="-Werror"
+        AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]], [[while (__AFL_LOOP(1000))]])],
+                [AC_DEFINE([AFLFUZZ_PERSISTANT_MODE], [1], [Enable AFL PERSISTANT_MODE])],
+                [])
+        CFLAGS=$CFLAGS_ORIG
+        AC_LANG_PUSH(C++)
+        tmp_saved_flags=$[]_AC_LANG_PREFIX[]FLAGS
+        AS_IF([test "x$LIB_FUZZING_ENGINE" = "x"], [
+            LIB_FUZZING_ENGINE=-fsanitize=fuzzer
+            AC_SUBST(LIB_FUZZING_ENGINE)
+        ])
+        _AC_LANG_PREFIX[]FLAGS="$[]_AC_LANG_PREFIX[]FLAGS $LIB_FUZZING_ENGINE"
+        AC_MSG_CHECKING([whether $CXX accepts $LIB_FUZZING_ENGINE])
+        AC_LINK_IFELSE([AC_LANG_SOURCE([[
+#include <sys/types.h>
+extern "C" int LLVMFuzzerTestOneInput(const unsigned char *Data, size_t Size);
+extern "C" int LLVMFuzzerTestOneInput(const unsigned char *Data, size_t Size) {
+(void)Data;
+(void)Size;
+return 0;
+}
+            ]])],
+            [ AC_MSG_RESULT(yes)
+              has_sanitizefuzzer=yes],
+            [ AC_MSG_RESULT(no) ]
+        )
+        _AC_LANG_PREFIX[]FLAGS=$tmp_saved_flags
+        AC_LANG_POP()
+    ])
+
+    AM_CONDITIONAL([HAS_FUZZLDFLAGS], [test "x$has_sanitizefuzzer" = "xyes"])
+
   # enable the running of unit tests
     AC_ARG_ENABLE(unittests,
            AS_HELP_STRING([--enable-unittests], [Enable compilation of the unit tests]),[enable_unittests=$enableval],[enable_unittests=no])
@@ -443,56 +500,23 @@
            AS_HELP_STRING([--enable-ebpf-build], [Enable compilation of ebpf files]),[enable_ebpf_build=$enableval],[enable_ebpf_build=no])
     AM_CONDITIONAL([BUILD_EBPF], [test "x$enable_ebpf_build" = "xyes"])
 
-    if test "x$enable_ebpf_build" = "xyes"; then
-        if echo $CC | grep clang; then
-            if test "x$CC" = "xclang"; then
-                AC_PATH_PROG(HAVE_LLC, llc, "no")
-                if test "$HAVE_LLC" != "no"; then
-                    LLC="llc"
-                    AC_SUBST(LLC)
-                else
-                    llc_version_line=$($CC --version|$GREP version)
-                    llc_version=$(echo $llc_version_line| cut -d '(' -f 1 | $GREP -E -o '@<:@0-9@:>@\.@<:@0-9@:>@')
-                    AC_PATH_PROG(HAVE_LLC, "llc-$llc_version", "no")
-                    if test "$HAVE_LLC" != "no"; then
-                        LLC="llc-$llc_version"
-                        AC_SUBST(LLC)
-		    else
-                        echo "unable to find llc needed to build ebpf files"
-                        exit 1
+    AS_IF([test "x$enable_ebpf_build" = "xyes"],
+          [
+            AS_IF([test "$CLANG" != no],
+                  [
+                    llc_candidates=$($CLANG --version | \
+                      awk '/^clang version/ {
+                             split($3, v, ".");
+                             printf("llc-%s.%s llc-%s llc", v[[1]], v[[2]], v[[1]])
+                           }')
+                    AC_CHECK_PROGS([LLC], [$llc_candidates], "no")
+                    if test "$LLC" = "no"; then
+                        AC_MSG_ERROR([unable to find any of $llc_candidates needed to build ebpf files])
                     fi
-                fi
-            else
-                llc_version=$(echo $CC | cut -d '-' -f 2)
-                AC_PATH_PROG(HAVE_LLC, "llc-$llc_version", "no")
-                if test "$HAVE_LLC" != "no"; then
-                    LLC="llc-$llc_version"
                     AC_SUBST(LLC)
-                else
-                    llc_version_line=$($CC --version|$GREP version)
-                    llc_version=$(echo $llc_version_line| cut -d '(' -f 1 | $GREP -E -o '@<:@0-9@:>@\.@<:@0-9@:>@')
-                    AC_PATH_PROG(HAVE_LLC, "llc-$llc_version", "no")
-                    if test "$HAVE_LLC" != "no"; then
-                        LLC="llc-$llc_version"
-                        AC_SUBST(LLC)
-                    else
-                        echo "unable to find llc needed to build ebpf files"
-                        exit 1
-                    fi
-                fi
-            fi
-        else
-            echo "clang needed to build ebpf files"
-            exit 1        
-        fi
-    fi
-
-  # enable workaround for old barnyard2 for unified alert output
-    AC_ARG_ENABLE(old-barnyard2,
-           AS_HELP_STRING([--enable-old-barnyard2], [Use workaround for old barnyard2 in unified2 output]),[enable_old_barnyard2=$enableval],[enable_old_barnyard2=no])
-    AS_IF([test "x$enable_old_barnyard2" = "xyes"], [
-        AC_DEFINE([HAVE_OLD_BARNYARD2],[1],[Use workaround for old barnyard2 in unified2 output])
-    ])
+                  ],
+                  [AC_MSG_ERROR([clang needed to build ebpf files])])
+          ])
 
   # enable debug output
     AC_ARG_ENABLE(debug,
@@ -597,48 +621,6 @@
         LIBS="${TMPLIBS} -lz"
     fi
 
-  # liblzma
-    enable_liblzma=no
-
-    AC_ARG_WITH(liblzma_includes,
-            [  --with-liblzma-includes=DIR  liblzma include directory],
-            [with_liblzma_includes="$withval"],[with_liblzma_includes="no"])
-    AC_ARG_WITH(liblzma_libraries,
-            [  --with-liblzma-libraries=DIR    liblzma library directory],
-            [with_liblzma_libraries="$withval"],[with_liblzma_libraries="no"])
-
-    if test "$with_liblzma_includes" != "no"; then
-        CPPFLAGS="${CPPFLAGS} -I${with_liblzma_includes}"
-    fi
-    TMPLIBS="${LIBS}"
-
-    AC_CHECK_HEADER(lzma.h,
-        AC_CHECK_LIB(lzma,lzma_code,[
-	    AC_DEFINE([HAVE_LIBLZMA],[1],[liblzma available])
-	    LIBLZMA="yes"
-            if test "$LIBLZMA" = "yes"; then
-                if test "$with_liblzma_libraries" != "no"; then
-                    LDFLAGS="${LDFLAGS}  -L${with_liblzma_libraries}"
-                    LIBS="${TMPLIBS} -llzma"
-		else
-		    LIBS="${TMPLIBS} -llzma"
-                fi
-            fi]),LIBLZMA="no")
-
-    if test "$LIBLZMA" != "yes"; then
-        echo
-        echo "   Warning! liblzma library not found, you will not be"
-        echo "   able to decompress flash file compressed with lzma."
-        echo "   Debian/Ubuntu: apt install liblzma-dev"
-        echo "   Fedora: dnf install xz-devel"
-        echo "   CentOS/RHEL: yum install xz-devel"
-        echo
-        enable_liblzma=no
-    else
-        enable_liblzma=yes
-        LIBS="${TMPLIBS} -llzma"
-    fi
-
   #libpcre
     AC_ARG_WITH(libpcre_includes,
             [  --with-libpcre-includes=DIR  libpcre include directory],
@@ -650,7 +632,7 @@
     if test "$with_libpcre_includes" != "no"; then
         CPPFLAGS="${CPPFLAGS} -I${with_libpcre_includes}"
     fi
-    AC_CHECK_HEADER(pcre.h,,[AC_ERROR(pcre.h not found ...)])
+    AC_CHECK_HEADER(pcre.h,,[AC_MSG_ERROR(pcre.h not found ...)])
 
     if test "$with_libpcre_libraries" != "no"; then
         LDFLAGS="${LDFLAGS} -L${with_libpcre_libraries}"
@@ -699,9 +681,9 @@
     fi
     LIBS="${TMPLIBS}"
 
-    AC_TRY_COMPILE([ #include <pcre.h> ],
-        [ int eo = 0; eo |= PCRE_EXTRA_MATCH_LIMIT_RECURSION; ],
-        [ pcre_match_limit_recursion_available=yes ], [:]
+    AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[ #include <pcre.h> ]],
+        [[ int eo = 0; eo |= PCRE_EXTRA_MATCH_LIMIT_RECURSION; ]])],
+        [ pcre_match_limit_recursion_available=yes ],[:]
     )
     if test "$pcre_match_limit_recursion_available" != "yes"; then
         echo
@@ -715,20 +697,19 @@
 
     TMPCFLAGS="${CFLAGS}"
     CFLAGS="-O0 -g -Werror -Wall"
-    AC_TRY_COMPILE([ #include <pcre.h> ],
-        [ pcre_extra *extra = NULL; pcre_free_study(extra); ],
-        [ AC_DEFINE([HAVE_PCRE_FREE_STUDY], [1], [Pcre pcre_free_study supported])], [:]
+    AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[ #include <pcre.h> ]],
+        [[ pcre_extra *extra = NULL; pcre_free_study(extra); ]])],
+        [ AC_DEFINE([HAVE_PCRE_FREE_STUDY], [1], [Pcre pcre_free_study supported])],[:]
     )
     CFLAGS="${TMPCFLAGS}"
 
     #enable support for PCRE-jit available since pcre-8.20
     AC_MSG_CHECKING(for PCRE JIT support)
-    AC_TRY_COMPILE([ #include <pcre.h> ],
-        [
+    AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[ #include <pcre.h> ]],
+        [[
         int jit = 0;
         pcre_config(PCRE_CONFIG_JIT, &jit);
-        ],
-        [ pcre_jit_available=yes ], [ pcre_jit_available=no ]
+        ]])],[ pcre_jit_available=yes ],[ pcre_jit_available=no ]
         )
 
     case $host in
@@ -755,15 +736,12 @@
        AC_DEFINE([PCRE_HAVE_JIT], [1], [Pcre with JIT compiler support enabled])
 
        AC_MSG_CHECKING(for PCRE JIT support usability)
-       AC_TRY_COMPILE([ #include <pcre.h> ],
-           [
-           const char* regexstr = "(a|b|c|d)";
-           pcre *re;
+       AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[ #include <pcre.h> ]],
+           [[
            const char *error;
-           pcre_extra *extra;
            int err_offset;
-           re = pcre_compile(regexstr,0, &error, &err_offset,NULL);
-           extra = pcre_study(re, PCRE_STUDY_JIT_COMPILE, &error);
+           pcre *re = pcre_compile("(a|b|c|d)",0, &error, &err_offset,NULL);
+           pcre_extra *extra = pcre_study(re, PCRE_STUDY_JIT_COMPILE, &error);
            if (extra == NULL)
                exit(EXIT_FAILURE);
            int jit = 0;
@@ -771,8 +749,7 @@
            if (ret != 0 || jit != 1)
                exit(EXIT_FAILURE);
            exit(EXIT_SUCCESS);
-           ],
-           [ pcre_jit_works=yes ], [:]
+           ]])],[ pcre_jit_works=yes ],[:]
        )
        if test "x$pcre_jit_works" != "xyes"; then
            AC_MSG_RESULT(no)
@@ -783,6 +760,39 @@
            exit 1
        else
            AC_MSG_RESULT(yes)
+       fi
+    else
+        AC_MSG_RESULT(no)
+    fi
+
+    if test "x$pcre_jit_works" = "xyes"; then
+
+       AC_MSG_CHECKING(for PCRE JIT EXEC support usability)
+       AC_RUN_IFELSE([AC_LANG_PROGRAM([[
+                          #include <pcre.h>
+                          #include <string.h>
+                          ]],
+           [[
+           const char *error;
+           int err_offset;
+           pcre *re = pcre_compile("(a|b|c|d)", 0, &error, &err_offset,NULL);
+           pcre_extra *study = pcre_study(re, PCRE_STUDY_JIT_COMPILE, &error);
+           if (study == NULL)
+               exit(EXIT_FAILURE);
+           pcre_jit_stack *stack = pcre_jit_stack_alloc(32*1024,40*1024);
+           if (stack == 0)
+               exit(EXIT_FAILURE);
+           int ret = pcre_jit_exec(re, study, "apple", 5, 0, 0, NULL, 0, stack);
+           if (ret != 0)
+               exit(EXIT_FAILURE);
+           exit(EXIT_SUCCESS);
+           ]])],[ pcre_jit_exec_works=yes ],[:]
+       )
+       if test "x$pcre_jit_exec_works" != "xyes"; then
+           AC_MSG_RESULT(no)
+       else
+           AC_MSG_RESULT(yes)
+           AC_DEFINE([PCRE_HAVE_JIT_EXEC], [1], [Pcre with JIT compiler support enabled supporting pcre_jit_exec])
        fi
     else
         AC_MSG_RESULT(no)
@@ -873,7 +883,7 @@
         CPPFLAGS="${CPPFLAGS} -I${with_libpthread_includes}"
     fi
 
-    dnl AC_CHECK_HEADER(pthread.h,,[AC_ERROR(pthread.h not found ...)])
+    dnl AC_CHECK_HEADER(pthread.h,,[AC_MSG_ERROR(pthread.h not found ...)])
 
     if test "$with_libpthread_libraries" != "no"; then
         LDFLAGS="${LDFLAGS}  -L${with_libpthread_libraries}"
@@ -888,6 +898,8 @@
         echo
         exit 1
     fi
+
+    AC_CHECK_FUNCS([pthread_spin_unlock])
 
   # libjansson
     AC_ARG_WITH(libjansson_includes,
@@ -1011,7 +1023,7 @@
 
             if test "$NFNL" = "no"; then
                 echo
-                echo "   ERROR!  nfnetlink library not found, go get it"
+                echo "   nfnetlink library not found, go get it"
                 echo "   from www.netfilter.org."
                 echo "   we automatically append libnetfilter_queue/ when searching"
                 echo "   for headers etc. when the --with-libnfnetlink-includes directive"
@@ -1041,7 +1053,7 @@
             CPPFLAGS="${CPPFLAGS} -I${with_libnetfilter_queue_includes}"
         fi
 
-        AC_CHECK_HEADER(libnetfilter_queue/libnetfilter_queue.h,,[AC_ERROR(libnetfilter_queue/libnetfilter_queue.h not found ...)])
+        AC_CHECK_HEADER(libnetfilter_queue/libnetfilter_queue.h,,[AC_MSG_ERROR(libnetfilter_queue/libnetfilter_queue.h not found ...)])
 
         if test "$with_libnetfilter_queue_libraries" != "no"; then
             LDFLAGS="${LDFLAGS}  -L${with_libnetfilter_queue_libraries}"
@@ -1108,7 +1120,7 @@
             CPPFLAGS="${CPPFLAGS} -I${with_libnetfilter_log_includes}"
         fi
 
-        AC_CHECK_HEADER(libnetfilter_log/libnetfilter_log.h,,[AC_ERROR(libnetfilter_log.h not found ...)])
+        AC_CHECK_HEADER(libnetfilter_log/libnetfilter_log.h,,[AC_MSG_ERROR(libnetfilter_log.h not found ...)])
 
         if test "$with_libnetfilter_log_libraries" != "no"; then
             LDFLAGS="${LDFLAGS}  -L${with_libnetfilter_log_libraries}"
@@ -1321,14 +1333,27 @@
         CPPFLAGS="${CPPFLAGS} -I${with_libpcap_includes}"
     fi
 
-    AC_CHECK_HEADER(pcap.h,,[AC_ERROR(pcap.h not found ...)])
+    AC_CHECK_HEADERS([pcap.h],[],[AC_MSG_ERROR(pcap.h not found ...)],
+            [[
+                #ifdef HAVE_WINSOCK2_H
+                #include <winsock2.h>
+                #endif
+                #define _DEFAULT_SOURCE 1
+            ]])
 
     if test "$with_libpcap_libraries" != "no"; then
         LDFLAGS="${LDFLAGS}  -L${with_libpcap_libraries}"
     fi
-    AC_CHECK_HEADERS([pcap.h pcap/pcap.h pcap/bpf.h])
+    AC_CHECK_HEADERS([pcap.h pcap/pcap.h pcap/bpf.h],[],[],
+            [[
+                #ifdef HAVE_WINSOCK2_H
+                #include <winsock2.h>
+                #endif
+                #define _DEFAULT_SOURCE 1
+            ]])
 
     LIBPCAP=""
+    PKG_CHECK_MODULES([PCAP],libpcap,[CPPFLAGS="${CPPFLAGS} ${PCAP_CFLAGS}" LIBS="${LIBS} ${PCAP_LIBS}"],[:])
     AC_CHECK_LIB(${PCAP_LIB_NAME}, pcap_open_live,, LIBPCAP="no")
     if test "$LIBPCAP" = "no"; then
         echo
@@ -1387,7 +1412,7 @@
     AS_IF([test "x$enable_pfring" = "xyes"], [
         AC_DEFINE([HAVE_PFRING],[1],(PF_RING support enabled))
 
-        #We have to set CFLAGS for AC_TRY_COMPILE as it doesn't pay attention to CPPFLAGS
+        #We have to set CFLAGS for AC_COMPILE_IFELSE as it doesn't pay attention to CPPFLAGS
         AC_ARG_WITH(libpfring_includes,
                 [  --with-libpfring-includes=DIR  libpfring include directory],
                 [with_libpfring_includes="$withval"],[with_libpfring_includes=no])
@@ -1496,7 +1521,7 @@
             CPPFLAGS="${CPPFLAGS} -I${with_netmap_includes}"
         fi
 
-        AC_CHECK_HEADER(net/netmap_user.h,,[AC_ERROR(net/netmap_user.h not found ...)],)
+        AC_CHECK_HEADER(net/netmap_user.h,,[AC_MSG_ERROR(net/netmap_user.h not found ...)],)
 
         have_recent_netmap="no"
         AC_COMPILE_IFELSE([AC_LANG_PROGRAM([
@@ -1568,34 +1593,28 @@
     # Assume suircata-update will not be installed.
     have_suricata_update="no"
     ruledirprefix="$sysconfdir"
-    no_suricata_update_comment="#"
-    has_suricata_update_comment=""
-    suricata_update_rule_files="suricata-update-rule-files"
 
     if test "$enable_suricata_update" = "yes"; then
-      AC_CHECK_FILE([$srcdir/suricata-update/setup.py], [
-          have_suricata_update="yes"], [])
+        if test -f "$srcdir/suricata-update/setup.py"; then
+          have_suricata_update="yes"
+	fi
     fi
-    AM_CONDITIONAL([HAVE_SURICATA_UPDATE],
-        [test "x$have_suricata_update" != "xno"])
 
     if test "$have_suricata_update" = "yes"; then
         if test "$have_python_yaml" != "yes"; then
 	    echo ""
 	    echo "    Warning: suricata-update will not be installed as the"
-	    echo "        depedency python-yaml is not installed."
+	    echo "        Python yaml module is not installed.."
 	    echo ""
-	    echo "    Debian/Ubuntu: apt install python-yaml"
-	    echo "    Fedora: dnf install python-yaml"
-	    echo "    CentOS/RHEL: yum install python-yaml"
+            echo "    Install the yaml module for Python ${pymv} to enable"
+            echo "    suricata-update."
 	    echo
 	else
             SURICATA_UPDATE_DIR="suricata-update"
             AC_SUBST(SURICATA_UPDATE_DIR)
-            AC_OUTPUT(suricata-update/Makefile)
+            AC_CONFIG_FILES(suricata-update/Makefile)
+            AC_OUTPUT
             ruledirprefix="$localstatedir/lib"
-            no_suricata_update_comment=""
-            has_suricata_update_comment="#"
 	fi
     fi
 
@@ -1603,7 +1622,7 @@
     if test "x$enable_python" != "xyes"; then
         install_suricatactl="requires python"
     elif test "x$have_python_distutils" != "xyes"; then
-        install_suricatactl="requires distutils"
+        install_suricatactl="no, requires distutils"
     else
         install_suricatactl="yes"
     fi
@@ -1612,14 +1631,17 @@
     if test "x$have_suricata_update" != "xyes"; then
         install_suricata_update="not bundled"
     elif test "x$enable_python" != "xyes"; then
-        install_suricata_update="requires python"
+        install_suricata_update="no, requires python"
     elif test "x$have_python_distutils" != "xyes"; then
-        install_suricata_update="requires distutils"
+        install_suricata_update="no, requires distutils"
     elif test "x$have_python_yaml" != "xyes"; then
-        install_suricata_update="requires pyyaml"
+        install_suricata_update="no, requires pyyaml"
     else
         install_suricata_update="yes"
     fi
+
+    AM_CONDITIONAL([INSTALL_SURICATA_UPDATE],
+        [test "x$install_suricata_update" = "xyes"])
 
   # libhtp
     AC_ARG_ENABLE(non-bundled-htp,
@@ -1646,7 +1668,7 @@
             LDFLAGS="${LDFLAGS} -L${with_libhtp_libraries}"
         fi
 
-        AC_CHECK_HEADER(htp/htp.h,,[AC_ERROR(htp/htp.h not found ...)])
+        AC_CHECK_HEADER(htp/htp.h,,[AC_MSG_ERROR(htp/htp.h not found ...)])
 
         LIBHTP=""
         AC_CHECK_LIB(htp, htp_conn_create,, LIBHTP="no")
@@ -1656,12 +1678,12 @@
             echo
             exit 1
         fi
-        PKG_CHECK_MODULES(LIBHTPMINVERSION, [htp >= 0.5.20],[libhtp_minver_found="yes"],[libhtp_minver_found="no"])
+        PKG_CHECK_MODULES(LIBHTPMINVERSION, [htp >= 0.5.32],[libhtp_minver_found="yes"],[libhtp_minver_found="no"])
         if test "$libhtp_minver_found" = "no"; then
             PKG_CHECK_MODULES(LIBHTPDEVVERSION, [htp = 0.5.X],[libhtp_devver_found="yes"],[libhtp_devver_found="no"])
             if test "$libhtp_devver_found" = "no"; then
                 echo
-                echo "   ERROR! libhtp was found but it is neither >= 0.5.20, nor the dev 0.5.X"
+                echo "   ERROR! libhtp was found but it is neither >= 0.5.32, nor the dev 0.5.X"
                 echo
                 exit 1
             fi
@@ -1673,6 +1695,8 @@
         AC_CHECK_LIB([htp], [htp_decode_query_inplace],AC_DEFINE_UNQUOTED([HAVE_HTP_DECODE_QUERY_INPLACE],[1],[Found htp_decode_query_inplace function in libhtp]) ,,[-lhtp])
         AC_CHECK_LIB([htp], [htp_config_set_response_decompression_layer_limit],AC_DEFINE_UNQUOTED([HAVE_HTP_CONFIG_SET_RESPONSE_DECOMPRESSION_LAYER_LIMIT],[1],[Found htp_config_set_response_decompression_layer_limit function in libhtp]) ,,[-lhtp])
         AC_EGREP_HEADER(htp_config_set_path_decode_u_encoding, htp/htp.h, AC_DEFINE_UNQUOTED([HAVE_HTP_SET_PATH_DECODE_U_ENCODING],[1],[Found usable htp_config_set_path_decode_u_encoding function in libhtp]) )
+        AC_CHECK_LIB([htp], [htp_config_set_lzma_memlimit],AC_DEFINE_UNQUOTED([HAVE_HTP_CONFIG_SET_LZMA_MEMLIMIT],[1],[Found htp_config_set_lzma_memlimit function in libhtp]) ,,[-lhtp])
+        AC_CHECK_LIB([htp], [htp_config_set_compression_bomb_limit],AC_DEFINE_UNQUOTED([HAVE_HTP_CONFIG_SET_COMPRESSION_BOMB_LIMIT],[1],[Found htp_config_set_compression_bomb_limit function in libhtp]) ,,[-lhtp])
     ])
 
     if test "x$enable_non_bundled_htp" = "xno"; then
@@ -1686,13 +1710,15 @@
             # make sure libhtp is added to the includes
             CPPFLAGS="-I\${srcdir}/../libhtp/ ${CPPFLAGS}"
 
-            AC_CHECK_HEADER(iconv.h,,[AC_ERROR(iconv.h not found ...)])
+            AC_CHECK_HEADER(iconv.h,,[AC_MSG_ERROR(iconv.h not found ...)])
             AC_CHECK_LIB(iconv, libiconv_close)
             AC_DEFINE_UNQUOTED([HAVE_HTP_URI_NORMALIZE_HOOK],[1],[Assuming htp_config_register_request_uri_normalize function in bundled libhtp])
             AC_DEFINE_UNQUOTED([HAVE_HTP_TX_GET_RESPONSE_HEADERS_RAW],[1],[Assuming htp_tx_get_response_headers_raw function in bundled libhtp])
             AC_DEFINE_UNQUOTED([HAVE_HTP_DECODE_QUERY_INPLACE],[1],[Assuming htp_decode_query_inplace function in bundled libhtp])
             # enable when libhtp has been updated
             AC_DEFINE_UNQUOTED([HAVE_HTP_CONFIG_SET_RESPONSE_DECOMPRESSION_LAYER_LIMIT],[1],[Assuming htp_config_set_response_decompression_layer_limit function in bundled libhtp])
+            AC_DEFINE_UNQUOTED([HAVE_HTP_CONFIG_SET_LZMA_MEMLIMIT],[1],[Assuming htp_config_set_lzma_memlimit function in bundled libhtp])
+            AC_DEFINE_UNQUOTED([HAVE_HTP_CONFIG_SET_COMPRESSION_BOMB_LIMIT],[1],[Assuming htp_config_set_compression_bomb_limit function in bundled libhtp])
         else
             echo
             echo "  ERROR: Libhtp is not bundled. Get libhtp by doing:"
@@ -1773,8 +1799,8 @@
         if test "$LIBBPF" = "no"; then
             echo
             echo "   libbpf library and development headers not found but"
-            echo "   but needed to use eBPF code. It can be found in the"
-            echo "   Linux kernel tree under tools/lib/bpf"
+            echo "   needed to use eBPF code. It can be found at"
+            echo "   https://github.com/libbpf/libbpf"
             echo
             exit 1
         fi;
@@ -1866,13 +1892,14 @@
 
         if test "$NSPR" = "no"; then
             echo
-            echo "   ERROR!  libnspr library not found, go get it"
+            echo "   libnspr library not found, go get it"
             echo "   from Mozilla or your distribution:"
             echo
             echo "   Ubuntu: apt-get install libnspr4-dev"
             echo "   Fedora: dnf install nspr-devel"
             echo "   CentOS/RHEL: yum install nspr-devel"
             echo
+            enable_nspr="no"
         fi
     fi
 
@@ -1918,13 +1945,14 @@
 
         if test "$NSS" = "no"; then
             echo
-            echo "   ERROR! libnss library not found, go get it"
+            echo "   libnss library not found, go get it"
             echo "   from Mozilla or your distribution:"
             echo
             echo "   Ubuntu: apt-get install libnss3-dev"
             echo "   Fedora: dnf install nss-devel"
             echo "   CentOS/RHEL: yum install nss-devel"
             echo
+            enable_nss="no"
         fi
     fi
 
@@ -1969,11 +1997,15 @@
         fi
     fi
 
-  # Napatech - Using the 3GD API
+    # Napatech - Using the 3GD API
     AC_ARG_ENABLE(napatech,
                 AS_HELP_STRING([--enable-napatech],[Enabled Napatech Devices]),
                 [ enable_napatech=$enableval ],
                 [ enable_napatech=no])
+    AC_ARG_ENABLE(napatech_bypass,
+                AS_HELP_STRING([--disable-napatech-bypass],[Disable Bypass feature on Napatech cards]),
+                [ napatech_bypass=$enableval ],
+                [ napatech_bypass=yes])
     AC_ARG_WITH(napatech_includes,
                 [  --with-napatech-includes=DIR   napatech include directory],
                 [with_napatech_includes="$withval"],[with_napatech_includes="/opt/napatech3/include"])
@@ -2011,6 +2043,17 @@
         fi
 
         AC_DEFINE([HAVE_NAPATECH],[1],(Napatech capture card support))
+        if test "$napatech_bypass" = "yes"; then
+            AC_CHECK_LIB(ntapi, NT_FlowOpenAttrInit,NTFLOW="yes",NTFLOW="no")
+            if test "$NTFLOW" = "yes"; then
+                echo "   Napatech Flow Processing is Enabled (--disable-napatech-bypass if not needed)"
+                AC_DEFINE([NAPATECH_ENABLE_BYPASS],[1],(Napatech flowdirector support))
+            else
+                echo "Napatech Flow Processing is not available"
+            fi
+        else
+            echo "Napatech Flow Processing is Disabled."
+        fi
     fi
 
   # liblua
@@ -2181,43 +2224,66 @@
 
     AM_CONDITIONAL([HAVE_LUA], [test "x$enable_lua" != "xno"])
 
-  # libgeoip
+    # If Lua is enabled, test the integer size.
+    if test "x$enable_lua" = "xyes"; then
+        TMPLIBS="$LIBS"
+        LIBS=""
+
+        AC_MSG_CHECKING([size of lua integer])
+        AC_RUN_IFELSE([AC_LANG_PROGRAM([[#include <lua.h>]],
+            [[
+            if (sizeof(lua_Integer) == 8) {
+                return 1;
+            }
+            return 0;
+            ]])],
+            [
+                AC_MSG_RESULT([4])
+            ],
+            [
+                AC_MSG_RESULT([8])
+                AC_SUBST([LUA_INT8], ["lua_int8"])
+            ])
+        LIBS="$TMPLIBS"
+    fi
+
+  # libmaxminddb
     AC_ARG_ENABLE(geoip,
-	        AS_HELP_STRING([--enable-geoip],[Enable GeoIP support]),
+	        AS_HELP_STRING([--enable-geoip],[Enable GeoIP2 support]),
 	        [ enable_geoip="$enableval"],
 	        [ enable_geoip="no"])
-    AC_ARG_WITH(libgeoip_includes,
-            [  --with-libgeoip-includes=DIR  libgeoip include directory],
-            [with_libgeoip_includes="$withval"],[with_libgeoip_includes="no"])
-    AC_ARG_WITH(libgeoip_libraries,
-            [  --with-libgeoip-libraries=DIR    libgeoip library directory],
-            [with_libgeoip_libraries="$withval"],[with_libgeoip_libraries="no"])
+    AC_ARG_WITH(libmaxminddb_includes,
+            [  --with-libmaxminddb-includes=DIR  libmaxminddb include directory],
+            [with_libmaxminddb_includes="$withval"],[with_libmaxminddb_includes="no"])
+    AC_ARG_WITH(libmaxminddb_libraries,
+            [  --with-libmaxminddb-libraries=DIR    libmaxminddb library directory],
+            [with_libmaxminddb_libraries="$withval"],[with_libmaxminddb_libraries="no"])
 
     if test "$enable_geoip" = "yes"; then
-        if test "$with_libgeoip_includes" != "no"; then
-            CPPFLAGS="${CPPFLAGS} -I${with_libgeoip_includes}"
+        if test "$with_libmaxminddb_includes" != "no"; then
+            CPPFLAGS="${CPPFLAGS} -I${with_libmaxminddb_includes}"
         fi
 
-        AC_CHECK_HEADER(GeoIP.h,GEOIP="yes",GEOIP="no")
+        AC_CHECK_HEADER(maxminddb.h,GEOIP="yes",GEOIP="no")
         if test "$GEOIP" = "yes"; then
-            if test "$with_libgeoip_libraries" != "no"; then
-                LDFLAGS="${LDFLAGS} -L${with_libgeoip_libraries}"
+            if test "$with_libmaxminddb_libraries" != "no"; then
+                LDFLAGS="${LDFLAGS} -L${with_libmaxminddb_libraries}"
             fi
-            AC_CHECK_LIB(GeoIP, GeoIP_country_code_by_ipnum,, GEOIP="no")
+            AC_CHECK_LIB(maxminddb, MMDB_open,, GEOIP="no")
         fi
         if test "$GEOIP" = "no"; then
             echo
-            echo "   ERROR!  libgeoip library not found, go get it"
-            echo "   from http://www.maxmind.com/en/geolite or your distribution:"
+            echo "   ERROR!  libmaxminddb GeoIP2 library not found, go get it"
+            echo "   from https://github.com/maxmind/libmaxminddb or your distribution:"
             echo
-            echo "   Ubuntu: apt-get install libgeoip-dev"
-            echo "   Fedora: dnf install GeoIP-devel"
-            echo "   CentOS/RHEL: yum install GeoIP-devel"
+            echo "   Ubuntu: apt-get install libmaxminddb-dev"
+            echo "   Fedora: dnf install libmaxminddb-devel"
+            echo "   CentOS/RHEL: yum install libmaxminddb-devel"
             echo
             exit 1
         fi
 
-        AC_DEFINE([HAVE_GEOIP],[1],[libgeoip available])
+        AC_DEFINE([HAVE_GEOIP],[1],[libmaxminddb available])
         enable_geoip="yes"
     fi
 
@@ -2370,6 +2436,7 @@ fi
     AM_CONDITIONAL([HAVE_PDFLATEX], [test "x$enable_pdflatex" != "xno"])
 
 # Cargo/Rust
+    AM_CONDITIONAL([RUST_CROSS_COMPILE], [test "x$cross_compiling" = "xyes"])
     AC_PATH_PROG(RUSTC, rustc, "no")
     if test "$RUSTC" = "no"; then
         echo ""
@@ -2395,58 +2462,132 @@ fi
 
     enable_rust="yes"
     rust_compiler_version=$($RUSTC --version)
-    rust_cargo_version=$($CARGO --version)
+    rustc_version=$(echo "$rust_compiler_version" | sed 's/^.*[[^0-9]]\([[0-9]]*\.[[0-9]]*\.[[0-9]]*\).*$/\1/')
+    cargo_version_output=$($CARGO --version)
+    cargo_version=$(echo "$cargo_version_output" | sed 's/^.*[[^0-9]]\([[0-9]]*\.[[0-9]]*\.[[0-9]]*\).*$/\1/')
+
+    MIN_RUSTC_VERSION="1.34.2"
+    AC_MSG_CHECKING(for Rust version $MIN_RUSTC_VERSION or newer)
+    AS_VERSION_COMPARE([$rustc_version], [$MIN_RUSTC_VERSION],
+        [
+            echo ""
+            echo "ERROR: Rust $MIN_RUSTC_VERSION or newer required."
+            echo ""
+            echo "Rust version ${rustc_version} was found."
+            echo ""
+            exit 1
+	],
+	[],
+	[])
+    AC_MSG_RESULT(yes)
 
     rust_vendor_comment="# "
     have_rust_vendor="no"
-    rust_compiler_version="not set"
-    rust_cargo_version="not set"
 
-    # We may require Python if the Rust header stubs are not already
-    # generated.
-    if test "x$enable_python" != "xyes" && test ! -f rust/gen/c-headers/rust-core-gen.h; then
-        echo ""
-        echo "   ERROR! Rust support requires Python."
-        echo
-        echo "   Ubuntu: apt install python"
-        echo
-        exit 1
+    if test "x$cross_compiling" = "xyes"; then
+      RUST_SURICATA_LIB_XC_DIR="${host_alias}/"
+    else
+      RUST_SURICATA_LIB_XC_DIR=
     fi
 
     if test "x$enable_debug" = "xyes"; then
-      RUST_SURICATA_LIB="../rust/target/debug/${RUST_SURICATA_LIBNAME}"
+      RUST_SURICATA_LIB="../rust/target/${RUST_SURICATA_LIB_XC_DIR}debug/${RUST_SURICATA_LIBNAME}"
     else
-      RUST_SURICATA_LIB="../rust/target/release/${RUST_SURICATA_LIBNAME}"
+      RUST_SURICATA_LIB="../rust/target/${RUST_SURICATA_LIB_XC_DIR}release/${RUST_SURICATA_LIBNAME}"
     fi
+
     RUST_LDADD="${RUST_SURICATA_LIB} ${RUST_LDADD}"
-    CFLAGS="${CFLAGS} -I\${srcdir}/../rust/gen/c-headers"
+    CFLAGS="${CFLAGS} -I\${srcdir}/../rust/gen"
     AC_SUBST(RUST_SURICATA_LIB)
     AC_SUBST(RUST_LDADD)
     if test "x$CARGO_HOME" = "x"; then
-      AC_SUBST([CARGO_HOME], [~/.cargo])
+        if test "x$HAVE_CYGPATH" != "xno"; then
+          CYGPATH_CARGO_HOME=$(cygpath -a -t mixed ~/.cargo)
+          AC_SUBST([CARGO_HOME], [$CYGPATH_CARGO_HOME])
+        else
+          AC_SUBST([CARGO_HOME], [~/.cargo])
+        fi
     else
       AC_SUBST([CARGO_HOME], [$CARGO_HOME])
     fi
-    AC_CHECK_FILES([$srcdir/rust/vendor], [have_rust_vendor="yes"])
+
+    # Check for rustup. RUSTUP_HOME needs to be set if rustup is in
+    # use, and a user uses sudo (depending on configuration), or su to
+    # perform the install
+    rustup_home_path="no"
+    if test "x$RUSTUP_HOME" != "x"; then
+        rustup_home_path="$RUSTUP_HOME"
+    else
+        AC_PATH_PROG(have_rustup, rustup, "no")
+        if test "x$have_rustup" != "xno"; then
+            rustup_home_path=$($have_rustup show home 2>/dev/null || echo "no")
+        fi
+    fi
+    rustup_home=""
+    if test "x$rustup_home_path" != "xno"; then
+        rustup_home="RUSTUP_HOME=\$(RUSTUP_HOME_PATH)"
+    fi
+    AC_SUBST([RUSTUP_HOME_PATH], [$rustup_home_path])
+    AC_SUBST([rustup_home])
+
+    if test -e "$srcdir/rust/vendor"; then
+      have_rust_vendor="yes"
+    fi
+
     if test "x$have_rust_vendor" = "xyes"; then
       rust_vendor_comment=""
     fi
 
-    rust_compiler_version=$(rustc --version)
-    rust_cargo_version=$(cargo --version)
-
     AC_SUBST(rust_vendor_comment)
     AM_CONDITIONAL([HAVE_RUST_VENDOR], [test "x$have_rust_vendor" = "xyes"])
 
-    if test "x$enable_rust" = "xyes" || test "x$enable_rust" = "xyes (default)"; then
-      AC_PATH_PROG(HAVE_CARGO_VENDOR, cargo-vendor, "no")
-      if test "x$HAVE_CARGO_VENDOR" = "xno"; then
-        echo "   Warning: cargo-vendor not found, but it is only required"
-        echo "       for building the distribution"
-        echo "   To install: cargo install cargo-vendor"
+    # With Rust/Cargo 1.37 and greater, cargo-vendor is built-in.
+    AC_MSG_CHECKING(for cargo vendor support)
+    AS_VERSION_COMPARE([$cargo_version], [1.37.0],
+        [have_cargo_vendor="no"],
+        [have_cargo_vendor="yes"],
+        [have_cargo_vendor="yes"])
+    AC_MSG_RESULT($have_cargo_vendor)
+
+    # If Rust is older than 1.37, check for cargo-vendor as an
+    # external sub-command.
+    if test "x$have_cargo_vendor" != "xyes"; then
+        AC_CHECK_PROG(have_cargo_vendor_bin, cargo-vendor, yes, no)
+        have_cargo_vendor=$have_cargo_vendor_bin
+    fi
+
+    AC_CHECK_FILES([$srcdir/rust/gen], [have_rust_headers="yes"])
+    AC_PATH_PROG(CBINDGEN, cbindgen, "no")
+    if test "x$CBINDGEN" != "xno"; then
+      cbindgen_version=$(cbindgen --version | cut -d' ' -f2-)
+      min_cbindgen_version="0.10.0"
+      AS_VERSION_COMPARE([$cbindgen_version], [$min_cbindgen_version],
+          [cbindgen_ok="no"],
+          [cbindgen_ok="yes"],
+          [cbindgen_ok="yes"])
+      if test "x$cbindgen_ok" != "xyes"; then
+        echo "  Warning: cbindgen must be at least version $min_cbindgen_version,"
+        echo "      found $cbindgen_version."
+        echo "  To update: cargo install --force cbindgen"
+        CBINDGEN="no"
+      else
+        have_rust_headers="no"
       fi
     fi
-    AM_CONDITIONAL([HAVE_CARGO_VENDOR], [test "x$HAVE_CARGO_VENDOR" != "xno"])
+
+    # Require cbindgen if generated headers are not bundled.
+    if test "x$have_rust_headers" != "xyes"; then
+      if test "x$CBINDGEN" = "xno"; then
+        echo "  Warning: cbindgen too old or not found, it is required to "
+        echo "      generate header files."
+        echo "  To install: cargo install --force cbindgen"
+        AC_MSG_ERROR([cbindgen required])
+      fi
+    fi
+
+    AM_CONDITIONAL([HAVE_RUST_HEADERS], [test "x$have_rust_headers" = "xyes"])
+    AM_CONDITIONAL([HAVE_CBINDGEN], [test "x$CBINDGEN" != "xno"])
+    AM_CONDITIONAL([HAVE_CARGO_VENDOR], [test "x$have_cargo_vendor" != "xno"])
 
     AC_ARG_ENABLE(rust_strict,
            AS_HELP_STRING([--enable-rust-strict], [Rust warnings as errors]),[enable_rust_strict=$enableval],[enable_rust_strict=no])
@@ -2454,11 +2595,6 @@ fi
         RUST_FEATURES="strict"
     ])
     AC_SUBST(RUST_FEATURES)
-
-    AC_ARG_ENABLE(rust_debug,
-           AS_HELP_STRING([--enable-rust-debug], [Rust not in --release mode]),[enable_rust_debug=$enableval],[enable_rust_debug=no])
-    AM_CONDITIONAL([RUST_DEBUG], [test "x$enable_rust_debug" = "xyes"])
-    AC_SUBST(RUST_DEBUG)
 
 # get revision
     if test -f ./revision; then
@@ -2469,10 +2605,19 @@ fi
         if test "$HAVE_GIT_CMD" != "no"; then
             if [ test -d .git ]; then
                 REVISION=`git rev-parse --short HEAD`
+                DATE=`git log -1 --date=short --pretty=format:%cd`
+                REVISION="$REVISION $DATE"
                 AC_DEFINE_UNQUOTED([REVISION],[${REVISION}],[Git revision])
             fi
         fi
     fi
+
+if test "${enable_ebpf}" = "yes" || test "${enable_unittests}" = "yes"; then
+  AC_DEFINE([CAPTURE_OFFLOAD_MANAGER], [1],[Building flow bypass manager code])
+fi
+if test "${enable_ebpf}" = "yes" || test "${enable_nfqueue}" = "yes" || test "${enable_pfring}" = "yes" || test "${enable_napatech}" = "yes"  || test "${enable_unittests}" = "yes"; then
+  AC_DEFINE([CAPTURE_OFFLOAD], [1],[Building flow capture bypass code])
+fi
 
 AC_SUBST(CFLAGS)
 AC_SUBST(LDFLAGS)
@@ -2511,14 +2656,13 @@ if test "$WINDOWS_PATH" = "yes"; then
     esac
 
     e_sysconfdir="${e_winbase}\\\\"
-    e_sysconfrulesdir="$e_winbase\\\\rules\\\\"
     e_defaultruledir="$e_winbase\\\\rules\\\\"
     e_magic_file="$e_winbase\\\\magic.mgc"
     e_logdir="$e_winbase\\\\log"
     e_logfilesdir="$e_logdir\\\\files"
     e_logcertsdir="$e_logdir\\\\certs"
     e_datarulesdir="$e_winbase\\\\rules\\\\"
-    if test "$HAVE_CYGPATH" != "no"; then
+    if test "x$HAVE_CYGPATH" != "xno"; then
         # turn srcdir into abs path and convert to the
         # mixed output (/c/Users/dev into  c:/Users/dev)
         e_rustdir="$(cygpath -a -t mixed ${srcdir})/rust"
@@ -2532,9 +2676,9 @@ else
     EXPAND_VARIABLE(localstatedir, e_logfilesdir, "/log/suricata/files")
     EXPAND_VARIABLE(localstatedir, e_logcertsdir, "/log/suricata/certs")
     EXPAND_VARIABLE(sysconfdir, e_sysconfdir, "/suricata/")
-    EXPAND_VARIABLE(sysconfdir, e_sysconfrulesdir, "/suricata/rules")
     EXPAND_VARIABLE(localstatedir, e_localstatedir, "/run/suricata")
     EXPAND_VARIABLE(datadir, e_datarulesdir, "/suricata/rules")
+    EXPAND_VARIABLE(localstatedir, e_datadir, "/lib/suricata/data")
     EXPAND_VARIABLE(ruledirprefix, e_defaultruledir, "/suricata/rules")
 
     e_abs_srcdir=$(cd $srcdir && pwd)
@@ -2545,17 +2689,15 @@ AC_SUBST(e_rundir)
 AC_SUBST(e_logfilesdir)
 AC_SUBST(e_logcertsdir)
 AC_SUBST(e_sysconfdir)
-AC_SUBST(e_sysconfrulesdir)
-AC_SUBST(e_localstatedir)
 AC_DEFINE_UNQUOTED([CONFIG_DIR],["$e_sysconfdir"],[Our CONFIG_DIR])
+AC_SUBST(e_localstatedir)
+AC_DEFINE_UNQUOTED([DATA_DIR],["$e_datadir"],[Our DATA_DIR])
 AC_SUBST(e_magic_file)
 AC_SUBST(e_magic_file_comment)
 AC_SUBST(e_enable_evelog)
 AC_SUBST(e_datarulesdir)
 AC_SUBST(e_defaultruledir)
 AC_SUBST(e_rustdir)
-AC_SUBST(has_suricata_update_comment)
-AC_SUBST(no_suricata_update_comment)
 
 EXPAND_VARIABLE(prefix, CONFIGURE_PREFIX)
 EXPAND_VARIABLE(sysconfdir, CONFIGURE_SYSCONDIR)
@@ -2567,7 +2709,14 @@ AC_SUBST(CONFIGURE_LOCALSTATEDIR)
 AC_SUBST(CONFIGURE_DATAROOTDIR)
 AC_SUBST(PACKAGE_VERSION)
 
-AC_OUTPUT(Makefile src/Makefile rust/Makefile rust/Cargo.toml rust/.cargo/config qa/Makefile qa/coccinelle/Makefile rules/Makefile doc/Makefile doc/userguide/Makefile contrib/Makefile contrib/file_processor/Makefile contrib/file_processor/Action/Makefile contrib/file_processor/Processor/Makefile suricata.yaml etc/Makefile etc/suricata.logrotate etc/suricata.service python/Makefile python/suricata/config/defaults.py ebpf/Makefile)
+AC_CONFIG_FILES(Makefile src/Makefile rust/Makefile rust/Cargo.toml rust/.cargo/config)
+AC_CONFIG_FILES(qa/Makefile qa/coccinelle/Makefile)
+AC_CONFIG_FILES(rules/Makefile doc/Makefile doc/userguide/Makefile doc/devguide/Makefile)
+AC_CONFIG_FILES(contrib/Makefile contrib/file_processor/Makefile contrib/file_processor/Action/Makefile contrib/file_processor/Processor/Makefile)
+AC_CONFIG_FILES(suricata.yaml etc/Makefile etc/suricata.logrotate etc/suricata.service)
+AC_CONFIG_FILES(python/Makefile python/suricata/config/defaults.py)
+AC_CONFIG_FILES(ebpf/Makefile)
+AC_OUTPUT
 
 SURICATA_BUILD_CONF="Suricata Configuration:
   AF_PACKET support:                       ${enable_af_packet}
@@ -2589,14 +2738,13 @@ SURICATA_BUILD_CONF="Suricata Configuration:
   libnss support:                          ${enable_nss}
   libnspr support:                         ${enable_nspr}
   libjansson support:                      ${enable_jansson}
-  liblzma support:                         ${enable_liblzma}
   hiredis support:                         ${enable_hiredis}
   hiredis async with libevent:             ${enable_hiredis_async}
   Prelude support:                         ${enable_prelude}
   PCRE jit:                                ${pcre_jit_available}
   LUA support:                             ${enable_lua}
   libluajit:                               ${enable_luajit}
-  libgeoip:                                ${enable_geoip}
+  GeoIP2 support:                          ${enable_geoip}
   Non-bundled htp:                         ${enable_non_bundled_htp}
   Old barnyard2 support:                   ${enable_old_barnyard2}
   Hyperscan support:                       ${enable_hyperscan}
@@ -2605,13 +2753,14 @@ SURICATA_BUILD_CONF="Suricata Configuration:
 
   Rust support:                            ${enable_rust}
   Rust strict mode:                        ${enable_rust_strict}
-  Rust debug mode:                         ${enable_rust_debug}
-  Rust compiler:                           ${rust_compiler_version}
-  Rust cargo:                              ${rust_cargo_version}
+  Rust compiler path:                      ${RUSTC}
+  Rust compiler version:                   ${rust_compiler_version}
+  Cargo path:                              ${CARGO}
+  Cargo version:                           ${cargo_version_output}
+  Cargo vendor:                            ${have_cargo_vendor}
 
   Python support:                          ${enable_python}
   Python path:                             ${python_path}
-  Python version:                          ${python_version}
   Python distutils                         ${have_python_distutils}
   Python yaml                              ${have_python_yaml}
   Install suricatactl:                     ${install_suricatactl}

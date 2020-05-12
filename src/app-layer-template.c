@@ -174,28 +174,36 @@ static int TemplateStateGetEventInfo(const char *event_name, int *event_id,
     return 0;
 }
 
-static AppLayerDecoderEvents *TemplateGetEvents(void *statev, uint64_t tx_id)
+static int TemplateStateGetEventInfoById(int event_id, const char **event_name,
+                                         AppLayerEventType *event_type)
 {
-    TemplateState *state = statev;
-    TemplateTransaction *tx;
-
-    TAILQ_FOREACH(tx, &state->tx_list, next) {
-        if (tx->tx_id == tx_id) {
-            return tx->decoder_events;
-        }
+    *event_name = SCMapEnumValueToName(event_id, template_decoder_event_table);
+    if (*event_name == NULL) {
+        SCLogError(SC_ERR_INVALID_ENUM_MAP, "event \"%d\" not present in "
+                   "template enum map table.",  event_id);
+        /* This should be treated as fatal. */
+        return -1;
     }
 
-    return NULL;
+    *event_type = APP_LAYER_EVENT_TYPE_TRANSACTION;
+
+    return 0;
+}
+
+static AppLayerDecoderEvents *TemplateGetEvents(void *tx)
+{
+    return ((TemplateTransaction *)tx)->decoder_events;
 }
 
 /**
- * \brief Probe the input to see if it looks like template.
+ * \brief Probe the input to server to see if it looks like template.
  *
- * \retval ALPROTO_TEMPLATE if it looks like template, otherwise
- *     ALPROTO_UNKNOWN.
+ * \retval ALPROTO_TEMPLATE if it looks like template,
+ *     ALPROTO_FAILED, if it is clearly not ALPROTO_TEMPLATE,
+ *     otherwise ALPROTO_UNKNOWN.
  */
-static AppProto TemplateProbingParser(Flow *f, uint8_t direction,
-        uint8_t *input, uint32_t input_len, uint8_t *rdir)
+static AppProto TemplateProbingParserTs(Flow *f, uint8_t direction,
+        const uint8_t *input, uint32_t input_len, uint8_t *rdir)
 {
     /* Very simple test - if there is input, this is template. */
     if (input_len >= TEMPLATE_MIN_FRAME_LEN) {
@@ -207,8 +215,30 @@ static AppProto TemplateProbingParser(Flow *f, uint8_t direction,
     return ALPROTO_UNKNOWN;
 }
 
-static int TemplateParseRequest(Flow *f, void *statev,
-    AppLayerParserState *pstate, uint8_t *input, uint32_t input_len,
+/**
+ * \brief Probe the input to client to see if it looks like template.
+ *     TemplateProbingParserTs can be used instead if the protocol
+ *     is symmetric.
+ *
+ * \retval ALPROTO_TEMPLATE if it looks like template,
+ *     ALPROTO_FAILED, if it is clearly not ALPROTO_TEMPLATE,
+ *     otherwise ALPROTO_UNKNOWN.
+ */
+static AppProto TemplateProbingParserTc(Flow *f, uint8_t direction,
+        const uint8_t *input, uint32_t input_len, uint8_t *rdir)
+{
+    /* Very simple test - if there is input, this is template. */
+    if (input_len >= TEMPLATE_MIN_FRAME_LEN) {
+        SCLogNotice("Detected as ALPROTO_TEMPLATE.");
+        return ALPROTO_TEMPLATE;
+    }
+
+    SCLogNotice("Protocol not detected as ALPROTO_TEMPLATE.");
+    return ALPROTO_UNKNOWN;
+}
+
+static AppLayerResult TemplateParseRequest(Flow *f, void *statev,
+    AppLayerParserState *pstate, const uint8_t *input, uint32_t input_len,
     void *local_data, const uint8_t flags)
 {
     TemplateState *state = statev;
@@ -218,13 +248,13 @@ static int TemplateParseRequest(Flow *f, void *statev,
     /* Likely connection closed, we can just return here. */
     if ((input == NULL || input_len == 0) &&
         AppLayerParserStateIssetFlag(pstate, APP_LAYER_PARSER_EOF)) {
-        return 0;
+        SCReturnStruct(APP_LAYER_OK);
     }
 
     /* Probably don't want to create a transaction in this case
      * either. */
     if (input == NULL || input_len == 0) {
-        return 0;
+        SCReturnStruct(APP_LAYER_OK);
     }
 
     /* Normally you would parse out data here and store it in the
@@ -272,11 +302,11 @@ static int TemplateParseRequest(Flow *f, void *statev,
     }
 
 end:
-    return 0;
+    SCReturnStruct(APP_LAYER_OK);
 }
 
-static int TemplateParseResponse(Flow *f, void *statev, AppLayerParserState *pstate,
-    uint8_t *input, uint32_t input_len, void *local_data,
+static AppLayerResult TemplateParseResponse(Flow *f, void *statev, AppLayerParserState *pstate,
+    const uint8_t *input, uint32_t input_len, void *local_data,
     const uint8_t flags)
 {
     TemplateState *state = statev;
@@ -287,13 +317,13 @@ static int TemplateParseResponse(Flow *f, void *statev, AppLayerParserState *pst
     /* Likely connection closed, we can just return here. */
     if ((input == NULL || input_len == 0) &&
         AppLayerParserStateIssetFlag(pstate, APP_LAYER_PARSER_EOF)) {
-        return 0;
+        SCReturnStruct(APP_LAYER_OK);
     }
 
     /* Probably don't want to create a transaction in this case
      * either. */
     if (input == NULL || input_len == 0) {
-        return 0;
+        SCReturnStruct(APP_LAYER_OK);
     }
 
     /* Look up the existing transaction for this response. In the case
@@ -341,7 +371,7 @@ static int TemplateParseResponse(Flow *f, void *statev, AppLayerParserState *pst
     tx->response_done = 1;
 
 end:
-    return 0;
+    SCReturnStruct(APP_LAYER_OK);
 }
 
 static uint64_t TemplateGetTxCnt(void *statev)
@@ -465,21 +495,21 @@ void RegisterTemplateParsers(void)
             SCLogNotice("Unittest mode, registeringd default configuration.");
             AppLayerProtoDetectPPRegister(IPPROTO_TCP, TEMPLATE_DEFAULT_PORT,
                 ALPROTO_TEMPLATE, 0, TEMPLATE_MIN_FRAME_LEN, STREAM_TOSERVER,
-                TemplateProbingParser, NULL);
+                TemplateProbingParserTs, TemplateProbingParserTc);
 
         }
         else {
 
             if (!AppLayerProtoDetectPPParseConfPorts("tcp", IPPROTO_TCP,
                     proto_name, ALPROTO_TEMPLATE, 0, TEMPLATE_MIN_FRAME_LEN,
-                    TemplateProbingParser, NULL)) {
+                    TemplateProbingParserTs, TemplateProbingParserTc)) {
                 SCLogNotice("No template app-layer configuration, enabling echo"
                     " detection TCP detection on port %s.",
                     TEMPLATE_DEFAULT_PORT);
                 AppLayerProtoDetectPPRegister(IPPROTO_TCP,
                     TEMPLATE_DEFAULT_PORT, ALPROTO_TEMPLATE, 0,
                     TEMPLATE_MIN_FRAME_LEN, STREAM_TOSERVER,
-                    TemplateProbingParser, NULL);
+                    TemplateProbingParserTs, TemplateProbingParserTc);
             }
 
         }
@@ -534,6 +564,8 @@ void RegisterTemplateParsers(void)
 
         AppLayerParserRegisterGetEventInfo(IPPROTO_TCP, ALPROTO_TEMPLATE,
             TemplateStateGetEventInfo);
+        AppLayerParserRegisterGetEventInfoById(IPPROTO_TCP, ALPROTO_TEMPLATE,
+            TemplateStateGetEventInfoById);
         AppLayerParserRegisterGetEventsFunc(IPPROTO_TCP, ALPROTO_TEMPLATE,
             TemplateGetEvents);
     }

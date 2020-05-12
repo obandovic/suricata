@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2016 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -63,15 +63,14 @@
  */
 #define PARSE_REGEX  "^\\s*\"?\\s*?([0-9a-zA-Z\\:\\.\\-\\_\\+\\s+]+)\\s*\"?\\s*$"
 
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
-static int DetectSshSoftwareVersionMatch (ThreadVars *, DetectEngineThreadCtx *,
+static int DetectSshSoftwareVersionMatch (DetectEngineThreadCtx *,
         Flow *, uint8_t, void *, void *,
         const Signature *, const SigMatchCtx *);
 static int DetectSshSoftwareVersionSetup (DetectEngineCtx *, Signature *, const char *);
 static void DetectSshSoftwareVersionRegisterTests(void);
-static void DetectSshSoftwareVersionFree(void *);
+static void DetectSshSoftwareVersionFree(DetectEngineCtx *de_ctx, void *);
 static int g_ssh_banner_list_id = 0;
 
 static int InspectSshBanner(ThreadVars *tv,
@@ -91,7 +90,7 @@ void DetectSshSoftwareVersionRegister(void)
 {
     sigmatch_table[DETECT_AL_SSH_SOFTWAREVERSION].name = "ssh.softwareversion";
     sigmatch_table[DETECT_AL_SSH_SOFTWAREVERSION].desc = "match SSH software string";
-    sigmatch_table[DETECT_AL_SSH_SOFTWAREVERSION].url = DOC_URL DOC_VERSION "/rules/ssh-keywords.html#ssh-softwareversion";
+    sigmatch_table[DETECT_AL_SSH_SOFTWAREVERSION].url = "/rules/ssh-keywords.html#ssh-softwareversion";
     sigmatch_table[DETECT_AL_SSH_SOFTWAREVERSION].AppLayerTxMatch = DetectSshSoftwareVersionMatch;
     sigmatch_table[DETECT_AL_SSH_SOFTWAREVERSION].Setup = DetectSshSoftwareVersionSetup;
     sigmatch_table[DETECT_AL_SSH_SOFTWAREVERSION].Free  = DetectSshSoftwareVersionFree;
@@ -99,7 +98,7 @@ void DetectSshSoftwareVersionRegister(void)
     sigmatch_table[DETECT_AL_SSH_SOFTWAREVERSION].flags = SIGMATCH_QUOTES_OPTIONAL|SIGMATCH_INFO_DEPRECATED;
     sigmatch_table[DETECT_AL_SSH_SOFTWAREVERSION].alternative = DETECT_AL_SSH_SOFTWARE;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 
     g_ssh_banner_list_id = DetectBufferTypeRegister("ssh_banner");
 
@@ -122,7 +121,7 @@ void DetectSshSoftwareVersionRegister(void)
  * \retval 0 no match
  * \retval 1 match
  */
-static int DetectSshSoftwareVersionMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectSshSoftwareVersionMatch (DetectEngineThreadCtx *det_ctx,
         Flow *f, uint8_t flags, void *state, void *txv,
         const Signature *s, const SigMatchCtx *m)
 {
@@ -149,20 +148,19 @@ static int DetectSshSoftwareVersionMatch (ThreadVars *t, DetectEngineThreadCtx *
 /**
  * \brief This function is used to parse IPV4 ip_id passed via keyword: "id"
  *
+ * \param de_ctx Pointer to the detection engine context
  * \param idstr Pointer to the user provided id option
  *
  * \retval id_d pointer to DetectSshSoftwareVersionData on success
  * \retval NULL on failure
  */
-static DetectSshSoftwareVersionData *DetectSshSoftwareVersionParse (const char *str)
+static DetectSshSoftwareVersionData *DetectSshSoftwareVersionParse (DetectEngineCtx *de_ctx, const char *str)
 {
     DetectSshSoftwareVersionData *ssh = NULL;
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
 
-    ret = pcre_exec(parse_regex, parse_regex_study, str, strlen(str), 0, 0,
-                    ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, str, 0, 0, ov, MAX_SUBSTRINGS);
 
     if (ret < 1 || ret > 3) {
         SCLogError(SC_ERR_PCRE_MATCH, "invalid ssh.softwareversion option");
@@ -197,7 +195,7 @@ static DetectSshSoftwareVersionData *DetectSshSoftwareVersionParse (const char *
 
 error:
     if (ssh != NULL)
-        DetectSshSoftwareVersionFree(ssh);
+        DetectSshSoftwareVersionFree(de_ctx, ssh);
     return NULL;
 
 }
@@ -221,7 +219,7 @@ static int DetectSshSoftwareVersionSetup (DetectEngineCtx *de_ctx, Signature *s,
     if (DetectSignatureSetAppProto(s, ALPROTO_SSH) != 0)
         return -1;
 
-    ssh = DetectSshSoftwareVersionParse(str);
+    ssh = DetectSshSoftwareVersionParse(NULL, str);
     if (ssh == NULL)
         goto error;
 
@@ -239,7 +237,7 @@ static int DetectSshSoftwareVersionSetup (DetectEngineCtx *de_ctx, Signature *s,
 
 error:
     if (ssh != NULL)
-        DetectSshSoftwareVersionFree(ssh);
+        DetectSshSoftwareVersionFree(de_ctx, ssh);
     if (sm != NULL)
         SCFree(sm);
     return -1;
@@ -251,7 +249,7 @@ error:
  *
  * \param id_d pointer to DetectSshSoftwareVersionData
  */
-static void DetectSshSoftwareVersionFree(void *ptr)
+static void DetectSshSoftwareVersionFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     if (ptr == NULL)
         return;
@@ -271,9 +269,9 @@ static void DetectSshSoftwareVersionFree(void *ptr)
 static int DetectSshSoftwareVersionTestParse01 (void)
 {
     DetectSshSoftwareVersionData *ssh = NULL;
-    ssh = DetectSshSoftwareVersionParse("PuTTY_1.0");
+    ssh = DetectSshSoftwareVersionParse(NULL, "PuTTY_1.0");
     if (ssh != NULL && strncmp((char *) ssh->software_ver, "PuTTY_1.0", 9) == 0) {
-        DetectSshSoftwareVersionFree(ssh);
+        DetectSshSoftwareVersionFree(NULL, ssh);
         return 1;
     }
 
@@ -287,9 +285,9 @@ static int DetectSshSoftwareVersionTestParse01 (void)
 static int DetectSshSoftwareVersionTestParse02 (void)
 {
     DetectSshSoftwareVersionData *ssh = NULL;
-    ssh = DetectSshSoftwareVersionParse("\"SecureCRT-4.0\"");
+    ssh = DetectSshSoftwareVersionParse(NULL, "\"SecureCRT-4.0\"");
     if (ssh != NULL && strncmp((char *) ssh->software_ver, "SecureCRT-4.0", 13) == 0) {
-        DetectSshSoftwareVersionFree(ssh);
+        DetectSshSoftwareVersionFree(NULL, ssh);
         return 1;
     }
 
@@ -303,9 +301,9 @@ static int DetectSshSoftwareVersionTestParse02 (void)
 static int DetectSshSoftwareVersionTestParse03 (void)
 {
     DetectSshSoftwareVersionData *ssh = NULL;
-    ssh = DetectSshSoftwareVersionParse("");
+    ssh = DetectSshSoftwareVersionParse(NULL, "");
     if (ssh != NULL) {
-        DetectSshSoftwareVersionFree(ssh);
+        DetectSshSoftwareVersionFree(NULL, ssh);
         return 0;
     }
 

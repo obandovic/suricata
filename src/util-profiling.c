@@ -114,7 +114,7 @@ static SC_ATOMIC_DECLARE(uint64_t, samples);
 /**
  * Used as a check so we don't double enter a profiling run.
  */
-__thread int profiling_rules_entered = 0;
+thread_local int profiling_rules_entered = 0;
 
 void SCProfilingDumpPacketStats(void);
 const char * PacketProfileDetectIdToString(PacketProfileDetectId id);
@@ -1313,12 +1313,16 @@ const char * PacketProfileLoggertIdToString(LoggerId id)
         CASE_CODE (LOGGER_JSON_DHCP);
         CASE_CODE (LOGGER_JSON_KRB5);
         CASE_CODE (LOGGER_JSON_IKEV2);
+        CASE_CODE (LOGGER_JSON_FTP);
         CASE_CODE (LOGGER_JSON_TFTP);
         CASE_CODE (LOGGER_JSON_SMTP);
         CASE_CODE (LOGGER_JSON_SNMP);
         CASE_CODE (LOGGER_JSON_TLS);
+        CASE_CODE (LOGGER_JSON_SIP);
         CASE_CODE (LOGGER_JSON_TEMPLATE_RUST);
+        CASE_CODE (LOGGER_JSON_RFB);
         CASE_CODE (LOGGER_JSON_TEMPLATE);
+        CASE_CODE (LOGGER_JSON_RDP);
         CASE_CODE (LOGGER_TLS_STORE);
         CASE_CODE (LOGGER_TLS);
         CASE_CODE (LOGGER_FILE_STORE);

@@ -56,6 +56,7 @@ enum RunModes {
     RUNMODE_REMOVE_SERVICE,
     RUNMODE_CHANGE_SERVICE_PARAMS,
 #endif
+    RUNMODE_DUMP_FEATURES,
     RUNMODE_MAX,
 };
 
@@ -78,7 +79,7 @@ const char *RunModeGetMainMode(void);
 void RunModeListRunmodes(void);
 void RunModeDispatch(int, const char *);
 void RunModeRegisterRunModes(void);
-void RunModeRegisterNewRunMode(int, const char *, const char *,
+void RunModeRegisterNewRunMode(enum RunModes, const char *, const char *,
                                int (*RunModeFunc)(void));
 void RunModeInitialize(void);
 void RunModeInitializeOutputs(void);
@@ -89,7 +90,7 @@ int RunModeOutputFileEnabled(void);
 /* bool indicating if filedata logger is enabled */
 int RunModeOutputFiledataEnabled(void);
 /** bool indicating if run mode is offline */
-bool IsRunModeOffline(int run_mode_to_check);
+bool IsRunModeOffline(enum RunModes run_mode_to_check);
 bool IsRunModeSystem(enum RunModes run_mode_to_check);
 
 void RunModeEnablesBypassManager(void);
@@ -109,7 +110,7 @@ int RunModeNeedsBypassManager(void);
 #include "runmode-netmap.h"
 #include "runmode-windivert.h"
 
-int threading_set_cpu_affinity;
+extern int threading_set_cpu_affinity;
 extern float threading_detect_ratio;
 
 extern int debuglog_enabled;

@@ -66,7 +66,7 @@ static int DetectHttpMethodSetupSticky(DetectEngineCtx *de_ctx, Signature *s, co
 void DetectHttpMethodRegisterTests(void);
 #endif
 void DetectHttpMethodFree(void *);
-static _Bool DetectHttpMethodValidateCallback(const Signature *s, const char **sigerror);
+static bool DetectHttpMethodValidateCallback(const Signature *s, const char **sigerror);
 static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
         const DetectEngineTransforms *transforms, Flow *_f,
         const uint8_t _flow_flags, void *txv, const int list_id);
@@ -79,7 +79,7 @@ void DetectHttpMethodRegister(void)
     /* http_method content modifier */
     sigmatch_table[DETECT_AL_HTTP_METHOD].name = "http_method";
     sigmatch_table[DETECT_AL_HTTP_METHOD].desc = "content modifier to match only on the HTTP method-buffer";
-    sigmatch_table[DETECT_AL_HTTP_METHOD].url = DOC_URL DOC_VERSION "/rules/http-keywords.html#http-method";
+    sigmatch_table[DETECT_AL_HTTP_METHOD].url = "/rules/http-keywords.html#http-method";
     sigmatch_table[DETECT_AL_HTTP_METHOD].Match = NULL;
     sigmatch_table[DETECT_AL_HTTP_METHOD].Setup = DetectHttpMethodSetup;
 #ifdef UNITTESTS
@@ -91,7 +91,7 @@ void DetectHttpMethodRegister(void)
     /* http.method sticky buffer */
     sigmatch_table[DETECT_HTTP_METHOD].name = "http.method";
     sigmatch_table[DETECT_HTTP_METHOD].desc = "sticky buffer to match specifically and only on the HTTP method buffer";
-    sigmatch_table[DETECT_HTTP_METHOD].url = DOC_URL DOC_VERSION "/rules/http-keywords.html#http-method";
+    sigmatch_table[DETECT_HTTP_METHOD].url = "/rules/http-keywords.html#http-method";
     sigmatch_table[DETECT_HTTP_METHOD].Setup = DetectHttpMethodSetupSticky;
     sigmatch_table[DETECT_HTTP_METHOD].flags |= SIGMATCH_NOOPT|SIGMATCH_INFO_STICKY_BUFFER;
 
@@ -157,7 +157,7 @@ static int DetectHttpMethodSetupSticky(DetectEngineCtx *de_ctx, Signature *s, co
  *  \retval 1 valid
  *  \retval 0 invalid
  */
-static _Bool DetectHttpMethodValidateCallback(const Signature *s, const char **sigerror)
+static bool DetectHttpMethodValidateCallback(const Signature *s, const char **sigerror)
 {
     const SigMatch *sm = s->init_data->smlists[g_http_method_buffer_id];
     for ( ; sm != NULL; sm = sm->next) {

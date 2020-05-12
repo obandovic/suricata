@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -39,8 +39,7 @@
 
 #define PARSE_REGEX "^(\\s*only\\s*)|\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*$"
 
-static pcre *parse_regex = NULL;
-static pcre_extra *parse_regex_study = NULL;
+static DetectParseRegex parse_regex;
 
 static int DetectFastPatternSetup(DetectEngineCtx *, Signature *, const char *);
 void DetectFastPatternRegisterTests(void);
@@ -98,7 +97,11 @@ void SupportFastPatternForSigMatchList(int list_id, int priority)
             return;
         }
 
-        if (priority <= tmp->priority)
+        /* We need a strict check to be sure that the current list
+         * was not already registered
+         * and other lists with the same priority hide it.
+         */
+        if (priority < tmp->priority)
             break;
 
         ip = tmp;
@@ -162,7 +165,7 @@ void DetectFastPatternRegister(void)
 {
     sigmatch_table[DETECT_FAST_PATTERN].name = "fast_pattern";
     sigmatch_table[DETECT_FAST_PATTERN].desc = "force using preceding content in the multi pattern matcher";
-    sigmatch_table[DETECT_FAST_PATTERN].url = DOC_URL DOC_VERSION "/rules/prefilter-keywords.html#fast-pattern";
+    sigmatch_table[DETECT_FAST_PATTERN].url = "/rules/prefilter-keywords.html#fast-pattern";
     sigmatch_table[DETECT_FAST_PATTERN].Match = NULL;
     sigmatch_table[DETECT_FAST_PATTERN].Setup = DetectFastPatternSetup;
     sigmatch_table[DETECT_FAST_PATTERN].Free  = NULL;
@@ -170,7 +173,7 @@ void DetectFastPatternRegister(void)
 
     sigmatch_table[DETECT_FAST_PATTERN].flags |= SIGMATCH_NOOPT;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 //static int DetectFastPatternParseArg(
@@ -188,7 +191,6 @@ void DetectFastPatternRegister(void)
  */
 static int DetectFastPatternSetup(DetectEngineCtx *de_ctx, Signature *s, const char *arg)
 {
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
     char arg_substr[128] = "";
@@ -255,8 +257,7 @@ static int DetectFastPatternSetup(DetectEngineCtx *de_ctx, Signature *s, const c
     }
 
     /* Execute the regex and populate args with captures. */
-    ret = pcre_exec(parse_regex, parse_regex_study, arg,
-                    strlen(arg), 0, 0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, arg, 0, 0, ov, MAX_SUBSTRINGS);
     /* fast pattern only */
     if (ret == 2) {
         if ((cd->flags & DETECT_CONTENT_NEGATED) ||

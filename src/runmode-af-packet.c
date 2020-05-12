@@ -42,7 +42,6 @@
 
 #include "alert-fastlog.h"
 #include "alert-prelude.h"
-#include "alert-unified2-alert.h"
 #include "alert-debuglog.h"
 
 #include "flow-bypass.h"
@@ -55,16 +54,15 @@
 #include "util-runmodes.h"
 #include "util-ioctl.h"
 #include "util-ebpf.h"
+#include "util-byte.h"
 
 #include "source-af-packet.h"
 
 extern int max_pending_packets;
 
-static const char *default_mode_workers = NULL;
-
 const char *RunModeAFPGetDefaultMode(void)
 {
-    return default_mode_workers;
+    return "workers";
 }
 
 void RunModeIdsAFPRegister(void)
@@ -76,7 +74,6 @@ void RunModeIdsAFPRegister(void)
                               "Workers af-packet mode, each thread does all"
                               " tasks from acquisition to logging",
                               RunModeIdsAFPWorkers);
-    default_mode_workers = "workers";
     RunModeRegisterNewRunMode(RUNMODE_AFP_DEV, "autofp",
                               "Multi socket AF_PACKET mode.  Packets from "
                               "each flow are assigned to a single detect "
@@ -92,7 +89,7 @@ static void AFPDerefConfig(void *conf)
 {
     AFPIfaceConfig *pfp = (AFPIfaceConfig *)conf;
     /* Pcap config is used only once but cost of this low. */
-    if (SC_ATOMIC_SUB(pfp->ref, 1) == 0) {
+    if (SC_ATOMIC_SUB(pfp->ref, 1) == 1) {
         SCFree(pfp);
     }
 }
@@ -156,6 +153,9 @@ static void *ParseAFPConfig(const char *iface)
     aconf->copy_mode = AFP_COPY_MODE_NONE;
     aconf->block_timeout = 10;
     aconf->block_size = getpagesize() << AFP_BLOCK_SIZE_DEFAULT_ORDER;
+#ifdef HAVE_PACKET_EBPF
+    aconf->ebpf_t_config.cpus_count = UtilCpuGetNumProcessorsConfigured();
+#endif
 
     if (ConfGet("bpf-filter", &bpf_filter) == 1) {
         if (strlen(bpf_filter) > 0) {
@@ -195,7 +195,11 @@ static void *ParseAFPConfig(const char *iface)
             if (strcmp(threadsstr, "auto") == 0) {
                 aconf->threads = 0;
             } else {
-                aconf->threads = atoi(threadsstr);
+                if (StringParseInt32(&aconf->threads, 10, 0, (const char *)threadsstr) < 0) {
+                    SCLogWarning(SC_ERR_INVALID_VALUE, "Invalid number of "
+                                 "threads, resetting to default");
+                    aconf->threads = 0;
+                }
             }
         }
     }
@@ -290,8 +294,11 @@ static void *ParseAFPConfig(const char *iface)
     if (ConfGetChildValueWithDefault(if_root, if_default, "cluster-id", &tmpclusterid) != 1) {
         aconf->cluster_id = (uint16_t)(cluster_id_auto++);
     } else {
-        aconf->cluster_id = (uint16_t)atoi(tmpclusterid);
-        SCLogDebug("Going to use cluster-id %" PRId32, aconf->cluster_id);
+        if (StringParseUint16(&aconf->cluster_id, 10, 0, (const char *)tmpclusterid) < 0) {
+            SCLogWarning(SC_ERR_INVALID_VALUE, "Invalid cluster_id, resetting to 0");
+            aconf->cluster_id = 0;
+        }
+        SCLogDebug("Going to use cluster-id %" PRIu16, aconf->cluster_id);
     }
 
     if (ConfGetChildValueWithDefault(if_root, if_default, "cluster-type", &tmpctype) != 1) {
@@ -378,15 +385,38 @@ static void *ParseAFPConfig(const char *iface)
 #ifdef HAVE_PACKET_EBPF
         SCLogConfig("af-packet will use '%s' as eBPF load balancing file",
                   ebpf_file);
-#endif
         aconf->ebpf_lb_file = ebpf_file;
+        aconf->ebpf_t_config.flags |= EBPF_SOCKET_FILTER;
+#endif
     }
+
+#ifdef HAVE_PACKET_EBPF
+    boolval = false;
+    if (ConfGetChildValueBoolWithDefault(if_root, if_default, "pinned-maps", (int *)&boolval) == 1) {
+        if (boolval) {
+            SCLogConfig("Using pinned maps on iface %s",
+                        aconf->iface);
+            aconf->ebpf_t_config.flags |= EBPF_PINNED_MAPS;
+        }
+        const char *pinned_maps_name = NULL;
+        if (ConfGetChildValueWithDefault(if_root, if_default,
+                    "pinned-maps-name",
+                    &pinned_maps_name) != 1) {
+            aconf->ebpf_t_config.pinned_maps_name = pinned_maps_name;
+        } else {
+            aconf->ebpf_t_config.pinned_maps_name = NULL;
+        }
+    } else {
+        aconf->ebpf_t_config.pinned_maps_name = NULL;
+    }
+#endif
 
 #ifdef HAVE_PACKET_EBPF
     /* One shot loading of the eBPF file */
     if (aconf->ebpf_lb_file && cluster_type == PACKET_FANOUT_EBPF) {
         int ret = EBPFLoadFile(aconf->iface, aconf->ebpf_lb_file, "loadbalancer",
-                               &aconf->ebpf_lb_fd, EBPF_SOCKET_FILTER);
+                               &aconf->ebpf_lb_fd,
+                               &aconf->ebpf_t_config);
         if (ret != 0) {
             SCLogWarning(SC_ERR_INVALID_VALUE, "Error when loading eBPF lb file");
         }
@@ -403,17 +433,17 @@ static void *ParseAFPConfig(const char *iface)
 #ifdef HAVE_PACKET_EBPF
         SCLogConfig("af-packet will use '%s' as eBPF filter file",
                   ebpf_file);
-#endif
         aconf->ebpf_filter_file = ebpf_file;
+        aconf->ebpf_t_config.mode = AFP_MODE_EBPF_BYPASS;
+        aconf->ebpf_t_config.flags |= EBPF_SOCKET_FILTER;
+#endif
         ConfGetChildValueBoolWithDefault(if_root, if_default, "bypass", &conf_val);
         if (conf_val) {
 #ifdef HAVE_PACKET_EBPF
             SCLogConfig("Using bypass kernel functionality for AF_PACKET (iface %s)",
                     aconf->iface);
             aconf->flags |= AFP_BYPASS;
-            RunModeEnablesBypassManager();
-            BypassedFlowManagerRegisterCheckFunc(EBPFCheckBypassedFlowTimeout);
-            BypassedFlowManagerRegisterUpdateFunc(EBPFUpdateFlow);
+            BypassedFlowManagerRegisterUpdateFunc(EBPFUpdateFlow, NULL);
 #else
             SCLogError(SC_ERR_UNIMPLEMENTED, "Bypass set but eBPF support is not built-in");
 #endif
@@ -424,7 +454,8 @@ static void *ParseAFPConfig(const char *iface)
     if (aconf->ebpf_filter_file) {
 #ifdef HAVE_PACKET_EBPF
         int ret = EBPFLoadFile(aconf->iface, aconf->ebpf_filter_file, "filter",
-                               &aconf->ebpf_filter_fd, EBPF_SOCKET_FILTER);
+                               &aconf->ebpf_filter_fd,
+                               &aconf->ebpf_t_config);
         if (ret != 0) {
             SCLogWarning(SC_ERR_INVALID_VALUE,
                          "Error when loading eBPF filter file");
@@ -437,21 +468,33 @@ static void *ParseAFPConfig(const char *iface)
     if (ConfGetChildValueWithDefault(if_root, if_default, "xdp-filter-file", &ebpf_file) != 1) {
         aconf->xdp_filter_file = NULL;
     } else {
-        SCLogInfo("af-packet will use '%s' as XDP filter file",
-                  ebpf_file);
+#ifdef HAVE_PACKET_XDP
+        aconf->ebpf_t_config.mode = AFP_MODE_XDP_BYPASS;
+        aconf->ebpf_t_config.flags |= EBPF_XDP_CODE;
         aconf->xdp_filter_file = ebpf_file;
         ConfGetChildValueBoolWithDefault(if_root, if_default, "bypass", &conf_val);
         if (conf_val) {
-#ifdef HAVE_PACKET_XDP
             SCLogConfig("Using bypass kernel functionality for AF_PACKET (iface %s)",
                     aconf->iface);
             aconf->flags |= AFP_XDPBYPASS;
-            RunModeEnablesBypassManager();
-            BypassedFlowManagerRegisterCheckFunc(EBPFCheckBypassedFlowTimeout);
-#else
-            SCLogError(SC_ERR_UNIMPLEMENTED, "Bypass set but XDP support is not built-in");
-#endif
+            /* if maps are pinned we need to read them at start */
+            if (aconf->ebpf_t_config.flags & EBPF_PINNED_MAPS) {
+                RunModeEnablesBypassManager();
+                struct ebpf_timeout_config *ebt = SCCalloc(1, sizeof(struct ebpf_timeout_config));
+                if (ebt == NULL) {
+                    SCLogError(SC_ERR_MEM_ALLOC, "Flow bypass alloc error");
+                } else {
+                    memcpy(ebt, &(aconf->ebpf_t_config), sizeof(struct ebpf_timeout_config));
+                    BypassedFlowManagerRegisterCheckFunc(NULL,
+                            EBPFCheckBypassedFlowCreate,
+                            (void *)ebt);
+                }
+            }
+            BypassedFlowManagerRegisterUpdateFunc(EBPFUpdateFlow, NULL);
         }
+#else
+        SCLogWarning(SC_ERR_UNIMPLEMENTED, "XDP filter set but XDP support is not built-in");
+#endif
 #ifdef HAVE_PACKET_XDP
         const char *xdp_mode;
         if (ConfGetChildValueWithDefault(if_root, if_default, "xdp-mode", &xdp_mode) != 1) {
@@ -463,9 +506,19 @@ static void *ParseAFPConfig(const char *iface)
                 aconf->xdp_mode = XDP_FLAGS_DRV_MODE;
             } else if (!strcmp(xdp_mode, "hw")) {
                 aconf->xdp_mode = XDP_FLAGS_HW_MODE;
+                aconf->ebpf_t_config.flags |= EBPF_XDP_HW_MODE;
             } else {
                 SCLogWarning(SC_ERR_INVALID_VALUE,
                              "Invalid xdp-mode value: '%s'", xdp_mode);
+            }
+        }
+
+        boolval = true;
+        if (ConfGetChildValueBoolWithDefault(if_root, if_default, "use-percpu-hash", (int *)&boolval) == 1) {
+            if (boolval == false) {
+                SCLogConfig("Not using percpu hash on iface %s",
+                        aconf->iface);
+                aconf->ebpf_t_config.cpus_count = 1;
             }
         }
 #endif
@@ -475,36 +528,43 @@ static void *ParseAFPConfig(const char *iface)
     if (aconf->xdp_filter_file) {
 #ifdef HAVE_PACKET_XDP
         int ret = EBPFLoadFile(aconf->iface, aconf->xdp_filter_file, "xdp",
-                               &aconf->xdp_filter_fd, EBPF_XDP_CODE);
-        if (ret != 0) {
-            SCLogWarning(SC_ERR_INVALID_VALUE,
-                         "Error when loading XDP filter file");
-        } else {
-            ret = EBPFSetupXDP(aconf->iface, aconf->xdp_filter_fd, aconf->xdp_mode);
-            if (ret != 0) {
+                               &aconf->xdp_filter_fd,
+                               &aconf->ebpf_t_config);
+        switch (ret) {
+            case 1:
+                SCLogInfo("Loaded pinned maps from sysfs");
+                break;
+            case -1:
                 SCLogWarning(SC_ERR_INVALID_VALUE,
-                             "Error when setting up XDP");
-            } else {
-                /* Try to get the xdp-cpu-redirect key */
-                const char *cpuset;
-                if (ConfGetChildValueWithDefault(if_root, if_default,
-                                                 "xdp-cpu-redirect", &cpuset) == 1) {
-                    SCLogConfig("Setting up CPU map XDP");
-                    ConfNode *node = ConfGetChildWithDefault(if_root, if_default, "xdp-cpu-redirect");
-                    if (node == NULL) {
-                        SCLogError(SC_ERR_INVALID_VALUE, "Should not be there");
-                    } else {
-                        EBPFBuildCPUSet(node, aconf->iface);
-                    }
+                             "Error when loading XDP filter file");
+                break;
+            case 0:
+                ret = EBPFSetupXDP(aconf->iface, aconf->xdp_filter_fd, aconf->xdp_mode);
+                if (ret != 0) {
+                    SCLogWarning(SC_ERR_INVALID_VALUE,
+                            "Error when setting up XDP");
                 } else {
+                    /* Try to get the xdp-cpu-redirect key */
+                    const char *cpuset;
+                    if (ConfGetChildValueWithDefault(if_root, if_default,
+                                "xdp-cpu-redirect", &cpuset) == 1) {
+                        SCLogConfig("Setting up CPU map XDP");
+                        ConfNode *node = ConfGetChildWithDefault(if_root, if_default, "xdp-cpu-redirect");
+                        if (node == NULL) {
+                            SCLogError(SC_ERR_INVALID_VALUE,
+                                       "Previously found node has disappeared");
+                        } else {
+                            EBPFBuildCPUSet(node, aconf->iface);
+                        }
+                    } else {
                         /* It will just set CPU count to 0 */
                         EBPFBuildCPUSet(NULL, aconf->iface);
+                    }
                 }
-            }
-            /* we have a peer and we use bypass so we can set up XDP iface redirect */
-            if (aconf->out_iface) {
-                EBPFSetPeerIface(aconf->iface, aconf->out_iface);
-            }
+                /* we have a peer and we use bypass so we can set up XDP iface redirect */
+                if (aconf->out_iface) {
+                    EBPFSetPeerIface(aconf->iface, aconf->out_iface);
+                }
         }
 #else
         SCLogError(SC_ERR_UNIMPLEMENTED, "XDP support is not built-in");
@@ -560,7 +620,7 @@ finalize:
     /* if the number of threads is not 1, we need to first check if fanout
      * functions on this system. */
     if (aconf->threads != 1) {
-        if (AFPIsFanoutSupported() == 0) {
+        if (AFPIsFanoutSupported(aconf->cluster_id) == 0) {
             if (aconf->threads != 0) {
                 SCLogNotice("fanout not supported on this system, falling "
                         "back to 1 capture thread");

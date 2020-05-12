@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2018 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -48,19 +48,16 @@
 #include "stream-tcp.h"
 
 #include "rust.h"
-#include "rust-smb-detect-gen.h"
 
-#define PARSE_REGEX "^\\s*([0-9a-zA-Z]{8}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{12})(?:\\s*,(<|>|=|!)([0-9]{1,5}))?(?:\\s*,(any_frag))?\\s*$"
+#define PARSE_REGEX "^\\s*([0-9a-zA-Z]{8}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{12})(?:\\s*,\\s*(<|>|=|!)([0-9]{1,5}))?(?:\\s*,\\s*(any_frag))?\\s*$"
 
-static pcre *parse_regex = NULL;
-static pcre_extra *parse_regex_study = NULL;
+static DetectParseRegex parse_regex;
 
-static int DetectDceIfaceMatchRust(ThreadVars *t,
-        DetectEngineThreadCtx *det_ctx,
+static int DetectDceIfaceMatchRust(DetectEngineThreadCtx *det_ctx,
         Flow *f, uint8_t flags, void *state, void *txv,
         const Signature *s, const SigMatchCtx *m);
 static int DetectDceIfaceSetup(DetectEngineCtx *, Signature *, const char *);
-static void DetectDceIfaceFree(void *);
+static void DetectDceIfaceFree(DetectEngineCtx *, void *);
 static void DetectDceIfaceRegisterTests(void);
 static int g_dce_generic_list_id = 0;
 
@@ -82,7 +79,7 @@ void DetectDceIfaceRegister(void)
     sigmatch_table[DETECT_DCE_IFACE].Free  = DetectDceIfaceFree;
     sigmatch_table[DETECT_DCE_IFACE].RegisterTests = DetectDceIfaceRegisterTests;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 
     g_dce_generic_list_id = DetectBufferTypeRegister("dce_generic");
 
@@ -120,7 +117,6 @@ static int InspectDceGeneric(ThreadVars *tv,
 static DetectDceIfaceData *DetectDceIfaceArgParse(const char *arg)
 {
     DetectDceIfaceData *did = NULL;
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
     uint8_t hex_value;
@@ -130,8 +126,7 @@ static DetectDceIfaceData *DetectDceIfaceArgParse(const char *arg)
     char temp_str[3] = "";
     int version;
 
-    ret = pcre_exec(parse_regex, parse_regex_study, arg, strlen(arg), 0, 0, ov,
-                    MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, arg, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 2) {
         SCLogError(SC_ERR_PCRE_MATCH, "pcre_exec parse error, ret %" PRId32 ", string %s", ret, arg);
         goto error;
@@ -276,7 +271,7 @@ static inline int DetectDceIfaceMatchIfaceVersion(const uint16_t version,
  * \retval 1 On Match.
  * \retval 0 On no match.
  */
-static int DetectDceIfaceMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectDceIfaceMatch(DetectEngineThreadCtx *det_ctx,
         Flow *f, uint8_t flags, void *state, void *txv,
         const Signature *s, const SigMatchCtx *m)
 {
@@ -340,15 +335,14 @@ end:
     SCReturnInt(ret);
 }
 
-static int DetectDceIfaceMatchRust(ThreadVars *t,
-        DetectEngineThreadCtx *det_ctx,
+static int DetectDceIfaceMatchRust(DetectEngineThreadCtx *det_ctx,
         Flow *f, uint8_t flags, void *state, void *txv,
         const Signature *s, const SigMatchCtx *m)
 {
     SCEnter();
 
     if (f->alproto == ALPROTO_DCERPC) {
-        return DetectDceIfaceMatch(t, det_ctx, f, flags,
+        return DetectDceIfaceMatch(det_ctx, f, flags,
                                    state, txv, s, m);
     }
 
@@ -381,14 +375,14 @@ static int DetectDceIfaceSetup(DetectEngineCtx *de_ctx, Signature *s, const char
 {
     DetectDceIfaceData *did = DetectDceIfaceArgParse(arg);
     if (did == NULL) {
-        SCLogError(SC_ERR_INVALID_SIGNATURE, "Error parsing dec_iface option in "
+        SCLogError(SC_ERR_INVALID_SIGNATURE, "Error parsing dce_iface option in "
                    "signature");
         return -1;
     }
 
     SigMatch *sm = SigMatchAlloc();
     if (sm == NULL) {
-        DetectDceIfaceFree(did);
+        DetectDceIfaceFree(de_ctx, did);
         return -1;
     }
 
@@ -399,7 +393,7 @@ static int DetectDceIfaceSetup(DetectEngineCtx *de_ctx, Signature *s, const char
     return 0;
 }
 
-static void DetectDceIfaceFree(void *ptr)
+static void DetectDceIfaceFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     SCFree(ptr);
 
@@ -449,7 +443,7 @@ static int DetectDceIfaceTestParse01(void)
     result &= (did->op == 0);
     result &= (did->any_frag == 0);
 
-    SigFree(s);
+    SigFree(NULL, s);
     SCReturnInt(result);
 }
 
@@ -492,7 +486,7 @@ static int DetectDceIfaceTestParse02(void)
     result &= (did->op == DETECT_DCE_IFACE_OP_GT);
     result &= (did->any_frag == 0);
 
-    SigFree(s);
+    SigFree(NULL, s);
     SCReturnInt(result);
 }
 
@@ -531,7 +525,7 @@ static int DetectDceIfaceTestParse03(void)
     result &= (did->op == DETECT_DCE_IFACE_OP_LT);
     result &= (did->any_frag == 0);
 
-    SigFree(s);
+    SigFree(NULL, s);
     SCReturnInt(result);
 }
 
@@ -574,7 +568,7 @@ static int DetectDceIfaceTestParse04(void)
     result &= (did->op == DETECT_DCE_IFACE_OP_NE);
     result &= (did->any_frag == 0);
 
-    SigFree(s);
+    SigFree(NULL, s);
     SCReturnInt(result);
 }
 
@@ -614,7 +608,7 @@ static int DetectDceIfaceTestParse05(void)
     result &= (did->op == DETECT_DCE_IFACE_OP_EQ);
     result &= (did->any_frag == 0);
 
-    SigFree(s);
+    SigFree(NULL, s);
     SCReturnInt(result);
 }
 
@@ -657,7 +651,7 @@ static int DetectDceIfaceTestParse06(void)
     result &= (did->op == 0);
     result &= (did->any_frag == 1);
 
-    SigFree(s);
+    SigFree(NULL, s);
     SCReturnInt(result);
 }
 
@@ -700,7 +694,7 @@ static int DetectDceIfaceTestParse07(void)
     result &= (did->op == DETECT_DCE_IFACE_OP_GT);
     result &= (did->any_frag == 1);
 
-    SigFree(s);
+    SigFree(NULL, s);
     SCReturnInt(result);
 }
 
@@ -741,7 +735,7 @@ static int DetectDceIfaceTestParse08(void)
     result &= (did->op == DETECT_DCE_IFACE_OP_LT);
     result &= (did->any_frag == 1);
 
-    SigFree(s);
+    SigFree(NULL, s);
     SCReturnInt(result);
 }
 
@@ -780,7 +774,7 @@ static int DetectDceIfaceTestParse09(void)
     result &= (did->op == DETECT_DCE_IFACE_OP_EQ);
     result &= (did->any_frag == 1);
 
-    SigFree(s);
+    SigFree(NULL, s);
     SCReturnInt(result);
 }
 
@@ -823,7 +817,7 @@ static int DetectDceIfaceTestParse10(void)
     result &= (did->op == DETECT_DCE_IFACE_OP_NE);
     result &= (did->any_frag == 1);
 
-    SigFree(s);
+    SigFree(NULL, s);
     SCReturnInt(result);
 }
 
@@ -847,7 +841,7 @@ static int DetectDceIfaceTestParse11(void)
     result &= (DetectDceIfaceSetup(NULL, s, "12345678-1234-1234-1234-123456789ABC,<0,any_frag") == -1);
     result &= (DetectDceIfaceSetup(NULL, s, "12345678-1234-1234-1234-123456789ABC,>65535,any_frag") == -1);
 
-    SigFree(s);
+    SigFree(NULL, s);
     return result;
 }
 
